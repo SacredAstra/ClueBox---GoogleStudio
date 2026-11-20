@@ -20,6 +20,7 @@ import {
   verifyCustody,
 } from './vault';
 import EvidenceIntegrity from './EvidenceIntegrity';
+import { extractExifMetadata } from './exif';
 import { parsePcap } from './pcap';
 import { parseRegistryHive } from './registry';
 import RegistryAnalysisResults from './RegistryAnalysisResults';
@@ -190,9 +191,27 @@ function App() {
   const [copilotBusy, setCopilotBusy] = useState(false);
   const [copilotError, setCopilotError] = useState('');
   const [copilotReviews, setCopilotReviews] = useState({});
+  const [copilotToolkitScanLog, setCopilotToolkitScanLog] = useState([]);
+  const [copilotToolkitScanResults, setCopilotToolkitScanResults] = useState(null);
+  const [copilotLiveAnalyses, setCopilotLiveAnalyses] = useState({});
+  const [autoDocumentCopilot, setAutoDocumentCopilot] = useState(true);
+  const [copilotMiniTab, setCopilotMiniTab] = useState('chat');
+  const [copilotWorkspaceTab, setCopilotWorkspaceTab] = useState('chat');
   const [timelineCaseId, setTimelineCaseId] = useState('');
   const [timelineRecords, setTimelineRecords] = useState([]);
   const [timelineIntegrity, setTimelineIntegrity] = useState({});
+  const [timelineViewMode, setTimelineViewMode] = useState('standard');
+  const [aiTimelineAnalysis, setAiTimelineAnalysis] = useState(null);
+  const [aiTimelineBusy, setAiTimelineBusy] = useState(false);
+  const [aiTimelineError, setAiTimelineError] = useState('');
+  const [aiTimelineSavedFinding, setAiTimelineSavedFinding] = useState(null);
+  const [aiTimelineReview, setAiTimelineReview] = useState({
+    status: 'VERIFIED',
+    analyst: '',
+    independentMethod: '',
+    notes: '',
+    attested: false,
+  });
   const [timelineFilters, setTimelineFilters] = useState({
     evidenceId: '',
     module: '',
@@ -207,8 +226,11 @@ function App() {
   const [reportBusy, setReportBusy] = useState(false);
   const [reportError, setReportError] = useState('');
   const [reportNotice, setReportNotice] = useState('');
+  const [caseDropdownOpen, setCaseDropdownOpen] = useState(false);
+  const [casePopupOpen, setCasePopupOpen] = useState(false);
   const fileInput = useRef(null);
   const caseInputRef = useRef(null);
+  const caseDropdownRef = useRef(null);
   const workspaceRef = useRef(null);
   const landingAuthRef = useRef(null);
   const appRootRef = useRef(null);
@@ -345,6 +367,34 @@ function App() {
           setTimelineRecords(items);
           setTimelineIntegrity(Object.fromEntries(checks));
           setTimelineError('');
+          const savedTimelineEntries = items
+            .flatMap((record) => (record.copilotFindings || [])
+              .filter((finding) => finding.analysisType === 'timeline')
+              .map((finding) => ({ evidenceId: record.id, finding })))
+            .sort((a, b) => String(b.finding.createdAt || '').localeCompare(String(a.finding.createdAt || '')));
+          const latestSaved = savedTimelineEntries[0];
+          if (latestSaved) {
+            const { evidenceId, finding } = latestSaved;
+            setAiTimelineAnalysis((current) => (current?.caseId === timelineCaseId && current?.findingId === finding.id
+              ? current
+              : {
+                caseId: timelineCaseId,
+                findingId: finding.id,
+                generatedAt: finding.createdAt,
+                response: finding,
+                facts: finding.observedEvidence || [],
+                sourceEventCount: finding.analyzedTimeline?.length || 0,
+              }));
+            setAiTimelineSavedFinding({
+              evidenceId,
+              findingId: finding.id,
+              status: finding.validationStatus || 'NEEDS REVIEW',
+              validationHistory: finding.validationHistory || [],
+            });
+          } else {
+            setAiTimelineAnalysis((current) => (current?.caseId === timelineCaseId ? current : null));
+            setAiTimelineSavedFinding((current) => (current && items.some((r) => r.id === current.evidenceId) ? current : null));
+          }
         }
       })
       .catch((timelineLoadError) => {
@@ -433,26 +483,18 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    if (!supabaseConfigured) {
-      setCopilotConfigured(false);
-      setCopilotAvailability(COPILOT_UNAVAILABLE_MESSAGE);
-      return () => { active = false; };
-    }
-    if (!authSession?.access_token) {
-      setCopilotConfigured(false);
-      setCopilotAvailability('Sign in to check secure AI provider configuration.');
-      return () => { active = false; };
-    }
     callCopilot({
-      supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
-      publishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-      accessToken: authSession.access_token,
+      supabaseUrl: supabaseConfigured && authSession?.access_token ? import.meta.env.VITE_SUPABASE_URL : '',
+      publishableKey: supabaseConfigured && authSession?.access_token ? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY : '',
+      accessToken: authSession?.access_token || '',
       action: 'status',
     })
       .then((status) => {
         if (active) {
           setCopilotConfigured(status.available === true);
-          setCopilotAvailability(status.available ? 'Secure AI provider configured; case authorization is checked per request.' : status.message);
+          setCopilotAvailability(status.available
+            ? (status.message || 'AI Forensic Copilot ready — full toolkit observatory active.')
+            : (status.message || COPILOT_UNAVAILABLE_MESSAGE));
         }
       })
       .catch((availabilityError) => {
@@ -470,6 +512,8 @@ function App() {
     ? teamCaseRegistration
     : null;
   const teamCaseRegistered = activeCaseRegistration?.status === 'registered';
+  const copilotUsesTeamBackend = Boolean(supabaseConfigured && authSession?.access_token);
+  const copilotAccessReady = copilotConfigured && (!copilotUsesTeamBackend || teamCaseRegistered);
   const canManageCaseEvidence = !supabaseConfigured || (
     teamCaseRegistered
     && ['admin', 'investigator'].includes(activeCaseRegistration?.role)
@@ -521,6 +565,7 @@ function App() {
     sqlite: ['SQLite Analysis', 'Review database schemas, records, and timestamp candidates.'],
     timeline: ['Investigation Timeline', 'Correlate source events while preserving timestamp certainty.'],
     reports: ['Investigation Reports', 'Prepare and export a case report without modifying evidence.'],
+    copilot: ['AI Forensic Copilot', 'Full-toolkit observatory, evidence fact & explanation scanner, workflow planner, and custodian verification.'],
   };
   const analysisWorkspace = ['exif', 'registry', 'pcap', 'sqlite'].includes(activeWorkspace);
   const evidenceWorkspaceVisible = ['evidence', ...['exif', 'registry', 'pcap', 'sqlite']].includes(activeWorkspace);
@@ -534,6 +579,7 @@ function App() {
     ['sqlite', 'SQLite Analysis', 'database'],
     ['timeline', 'Timeline', 'activity'],
     ['reports', 'Reports', 'fileText'],
+    ['copilot', 'AI Copilot', 'sparkles'],
   ];
   const moduleCards = [
     { id: 'cases', title: 'Case Management', description: 'Edit case details, review status, and register for team access.', icon: 'folderSearch' },
@@ -580,6 +626,44 @@ function App() {
     setSqliteNotes(selectedRecord?.sqliteAnalysis?.notes || '');
     setSqliteArtifactReferences(selectedRecord?.sqliteAnalysis?.artifactReferences?.join('\n') || '');
   }, [selectedRecord]);
+
+  const availableCases = useMemo(
+    () => [...new Set([...cases, ...(caseId ? [caseId] : [])])].sort(),
+    [cases, caseId],
+  );
+
+  useEffect(() => {
+    if (!caseDropdownOpen && !casePopupOpen) return undefined;
+    const handlePointerDown = (event) => {
+      if (caseDropdownOpen && caseDropdownRef.current && !caseDropdownRef.current.contains(event.target)) {
+        setCaseDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        if (caseDropdownOpen) setCaseDropdownOpen(false);
+        if (casePopupOpen) setCasePopupOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [caseDropdownOpen, casePopupOpen]);
+
+  const selectCaseFromDropdown = (selectedCase) => {
+    const normalized = selectedCase.trim();
+    if (!normalized || caseDetailsBusy) return;
+    setError('');
+    setNotice('');
+    if (normalized !== caseId) setCaseDetails(null);
+    setCaseId(normalized);
+    setCaseInput(normalized);
+    setCaseDropdownOpen(false);
+    setCasePopupOpen(true);
+  };
 
   const openCase = (event) => {
     event.preventDefault();
@@ -654,13 +738,15 @@ function App() {
     }
   };
 
-  const prepareCopilotContext = async () => {
-    const selected = activeRecords.filter((record) => copilotSelectedIds.includes(record.id));
+  const prepareCopilotContext = async (overrideIds = null, overrideLiveAnalyses = null) => {
+    const idsToUse = Array.isArray(overrideIds) ? overrideIds : copilotSelectedIds;
+    const selected = activeRecords.filter((record) => idsToUse.includes(record.id));
     setCopilotBusy(true);
     setCopilotError('');
     setCopilotResponse(null);
     setCopilotApproved(false);
     try {
+      const caseTimeline = createTimelineEvents(caseId, records, timelineIntegrity);
       const facts = await buildCopilotEvidenceContext(
         caseId,
         selected,
@@ -669,16 +755,221 @@ function App() {
           return true;
         },
         (custody) => verifyCustody(custody),
+        {
+          caseDetails,
+          timelineEvents: caseTimeline,
+          liveAnalyses: overrideLiveAnalyses || copilotLiveAnalyses,
+        },
       );
       setCopilotFacts(facts);
       setCopilotApprovedFactIds(facts.map((fact) => fact.referenceId));
+      return facts;
     } catch (copilotContextError) {
       setCopilotFacts([]);
       setCopilotApprovedFactIds([]);
       setCopilotError(copilotContextError.message || 'Could not prepare verified evidence facts.');
+      return [];
     } finally {
       setCopilotBusy(false);
     }
+  };
+
+  const runCopilotToolkitScan = async () => {
+    if (!db || !caseId || !activeRecords.length) {
+      setCopilotError('Open a case with active evidence before running a toolkit scan.');
+      return;
+    }
+    const targetIds = copilotSelectedIds.length
+      ? copilotSelectedIds
+      : activeRecords.slice(0, 25).map((record) => record.id);
+    if (!copilotSelectedIds.length) setCopilotSelectedIds(targetIds);
+    const targetRecords = activeRecords.filter((record) => targetIds.includes(record.id));
+    setCopilotBusy(true);
+    setCopilotError('');
+    const nextLive = { ...copilotLiveAnalyses };
+    const scanEntries = [];
+    const scanResults = [];
+    try {
+      for (const record of targetRecords) {
+        const blob = await downloadEvidence(db, record.id);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const custodyValid = await verifyCustody(record.custody).catch(() => false);
+        const head4 = bytes.length >= 4 ? String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) : '';
+        const head16 = bytes.length >= 16 ? new TextDecoder().decode(bytes.subarray(0, 16)) : '';
+        const magic32 = bytes.length >= 4 ? new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true) : 0;
+        const recordLive = { ...(nextLive[record.id] || {}) };
+        const observedModules = [];
+        const retrievedFacts = [];
+        const explanations = [];
+
+        retrievedFacts.push(
+          { module: 'Inventory', label: 'File type & size', value: `${record.type || 'Unknown MIME'} · ${formatBytes(record.size)} (${record.size.toLocaleString()} bytes)` },
+          { module: 'Integrity', label: 'SHA-256 hash', value: `${record.sha256} (verified match against encrypted vault payload)` },
+          { module: 'Custody', label: 'Chain of custody', value: `${record.custody.length} event${record.custody.length === 1 ? '' : 's'} · ${custodyValid ? 'cryptographic chain verified' : 'verification warning'} · latest: ${record.custody.at(-1)?.action || 'None'} by ${record.custody.at(-1)?.actor || 'unknown'}` },
+        );
+        if (record.createdAt) {
+          retrievedFacts.push({ module: 'Inventory', label: 'Vault intake time', value: formatDate(record.createdAt) });
+        }
+        if (record.lastModified) {
+          retrievedFacts.push({ module: 'Inventory', label: 'File last modified', value: new Date(record.lastModified).toISOString() });
+        }
+        if (record.dimensions) {
+          retrievedFacts.push({ module: 'Inventory', label: 'Image dimensions', value: record.dimensions });
+        }
+        if (record.pdfVersion) {
+          retrievedFacts.push({ module: 'Inventory', label: 'PDF version', value: record.pdfVersion });
+        }
+
+        explanations.push(
+          custodyValid
+            ? `Cryptographic integrity confirmed: "${record.name}" matches its stored SHA-256 fingerprint and maintains an unbroken ${record.custody.length}-event Chain of Custody.`
+            : `Custody attention needed: "${record.name}" passed SHA-256 payload verification, but its Chain of Custody requires manual review before relying on continuity.`,
+        );
+
+        let exifData = record.exif || recordLive.exif || null;
+        if (!exifData && (String(record.type || '').startsWith('image/') || /\.(jpe?g|tiff?)$/i.test(record.name))) {
+          const parsedExif = extractExifMetadata(bytes);
+          if (parsedExif && Object.keys(parsedExif).length > 0) {
+            exifData = parsedExif;
+            recordLive.exif = parsedExif;
+          }
+        }
+        if (exifData && Object.keys(exifData).length > 0) {
+          const exifEntries = Object.entries(exifData);
+          observedModules.push(`EXIF (${exifEntries.length} fields)`);
+          exifEntries.slice(0, 8).forEach(([field, val]) => {
+            retrievedFacts.push({ module: 'EXIF', label: exifLabels[field] || field, value: String(val) });
+          });
+          const hasGps = exifEntries.some(([k]) => k.toLowerCase().includes('gps'));
+          const hasDevice = exifData.make || exifData.model;
+          const hasDate = exifData.dateTimeOriginal || exifData.dateTime;
+          explanations.push(
+            `EXIF metadata retrieved (${exifEntries.length} fields): ${hasDevice ? `captures device identifiers (${[exifData.make, exifData.model].filter(Boolean).join(' ')})` : 'no camera make/model recorded'}${hasDate ? `, original capture timestamp "${exifData.dateTimeOriginal || exifData.dateTime}" (verify timezone offset—EXIF timestamps are typically local camera time)` : ''}${hasGps ? ', and embedded GPS coordinates suitable for geolocation corroboration' : ''}.`,
+          );
+        }
+
+        let regReport = record.registryAnalysis?.report || recordLive.registryAnalysis?.report || null;
+        if (!regReport && head4 === 'regf') {
+          try {
+            regReport = parseRegistryHive(bytes, record.name);
+            recordLive.registryAnalysis = { report: regReport, status: 'NEEDS REVIEW', analyst: 'AI Copilot Toolkit Scan', notes: 'Live read-only REGF hive inspection.', artifactReferences: [], sourceSha256: record.sha256 };
+          } catch (scanErr) {
+            scanEntries.push(`${record.name}: Registry scan warning — ${scanErr.message}`);
+            explanations.push(`Windows Registry parser reported a warning while inspecting this REGF hive: ${scanErr.message}.`);
+          }
+        }
+        if (regReport) {
+          const artifacts = regReport.artifacts || [];
+          observedModules.push(`Registry (${artifacts.length} artifacts)`);
+          artifacts.slice(0, 6).forEach((item) => {
+            const preview = (item.values || []).slice(0, 3).map((v) => `${v.name}=${typeof v.data === 'object' ? JSON.stringify(v.data) : String(v.data)}`).join('; ');
+            retrievedFacts.push({ module: 'Windows Registry', label: `${item.type} · ${item.keyPath}`, value: preview || 'Key present' });
+          });
+          const categories = [...new Set(artifacts.map((a) => a.type))].slice(0, 4).join(', ');
+          explanations.push(
+            `Windows Registry REGF hive identified (${artifacts.length} extracted artifact${artifacts.length === 1 ? '' : 's'}${categories ? ` covering ${categories}` : ''}). Registry entries establish system configuration, persistence mechanisms, user activity, or connected devices and should be cross-checked against timeline timestamps.`,
+          );
+        }
+
+        let pcapReport = record.pcapAnalysis?.report || recordLive.pcapAnalysis?.report || null;
+        if (!pcapReport && ([0xa1b2c3d4, 0xd4c3b2a1, 0xa1b23c4d, 0x4d3cb2a1, 0x0a0d0d0a].includes(magic32) || /\.(pcap|pcapng|cap)$/i.test(record.name))) {
+          try {
+            pcapReport = parsePcap(bytes, record.name);
+            recordLive.pcapAnalysis = { report: pcapReport, status: 'NEEDS REVIEW', analyst: 'AI Copilot Toolkit Scan', notes: 'Live read-only PCAP inspection.', artifactReferences: [], sourceSha256: record.sha256 };
+          } catch (scanErr) {
+            scanEntries.push(`${record.name}: PCAP scan warning — ${scanErr.message}`);
+            explanations.push(`PCAP parser reported a warning while inspecting this packet capture: ${scanErr.message}.`);
+          }
+        }
+        if (pcapReport) {
+          const conns = pcapReport.connections || [];
+          const leads = pcapReport.leads || [];
+          observedModules.push(`PCAP (${conns.length} connections, ${leads.length} leads)`);
+          conns.slice(0, 5).forEach((c) => {
+            retrievedFacts.push({
+              module: 'PCAP',
+              label: `${c.protocol} ${c.endpointA} ↔ ${c.endpointB}`,
+              value: `${c.packets} packets (${formatBytes(c.bytes || 0)}) · ${c.firstSeen || 'time unknown'} → ${c.lastSeen || 'time unknown'}`,
+            });
+          });
+          leads.slice(0, 4).forEach((l) => {
+            retrievedFacts.push({
+              module: 'PCAP Lead',
+              label: l.indicator || 'Network indicator',
+              value: `${l.sourceIp || '?'} → ${l.destinationIp || '?'}: ${l.note || l.classification || 'Requires analyst verification'}`,
+            });
+          });
+          explanations.push(
+            `Network capture analyzed (${pcapReport.packetCount ?? pcapReport.packets?.length ?? 0} packets across ${conns.length} connection${conns.length === 1 ? '' : 's'} and ${leads.length} investigative lead${leads.length === 1 ? '' : 's'}). ${leads.length ? 'Flagged network leads require manual endpoint attribution and packet-level verification in the PCAP module.' : 'Connection metadata provides concrete endpoint communication windows for timeline correlation.'}`,
+          );
+        }
+
+        let sqliteReport = record.sqliteAnalysis?.report || recordLive.sqliteAnalysis?.report || null;
+        if (!sqliteReport && head16 === 'SQLite format 3\0') {
+          try {
+            sqliteReport = await analyzeSqlite(bytes, record.name);
+            recordLive.sqliteAnalysis = { report: sqliteReport, status: 'NEEDS REVIEW', analyst: 'AI Copilot Toolkit Scan', notes: 'Live read-only SQLite inspection.', artifactReferences: [], sourceSha256: record.sha256 };
+          } catch (scanErr) {
+            scanEntries.push(`${record.name}: SQLite scan warning — ${scanErr.message}`);
+            explanations.push(`SQLite parser reported a warning while inspecting this database: ${scanErr.message}.`);
+          }
+        }
+        if (sqliteReport) {
+          const tables = sqliteReport.tables || [];
+          observedModules.push(`SQLite (${sqliteReport.tableCount ?? tables.length} tables, ${sqliteReport.recordCount ?? 0} rows)`);
+          tables.slice(0, 6).forEach((t) => {
+            const tsCount = (t.timestampFields || []).length;
+            retrievedFacts.push({
+              module: 'SQLite',
+              label: `Table ${t.name}`,
+              value: `${(t.columns || []).length} columns, ${t.rowCount ?? (t.records || []).length} rows${tsCount ? `, ${tsCount} timestamp column${tsCount === 1 ? '' : 's'}` : ''}`,
+            });
+          });
+          explanations.push(
+            `SQLite database inspected (${sqliteReport.tableCount ?? tables.length} table${(sqliteReport.tableCount ?? tables.length) === 1 ? '' : 's'}, ${sqliteReport.recordCount ?? 0} sampled/indexed rows). Structured application tables and candidate timestamp fields can reconstruct user actions, messaging, or browser history after verifying column encodings in SQLite Analysis.`,
+          );
+        }
+
+        if (!observedModules.length) {
+          explanations.push(
+            `No specialized EXIF, Registry, PCAP, or SQLite binary structure was detected in "${record.name}". Its file metadata, cryptographic hash, intake timestamps, and Chain of Custody logs have been extracted as verified baseline facts for timeline correlation and custody auditing.`,
+          );
+        }
+
+        nextLive[record.id] = recordLive;
+        scanEntries.push(`${record.name}: SHA-256 verified · ${record.custody.length} custody logs · ${observedModules.join(', ') || 'Inventory & custody logs'}`);
+        scanResults.push({
+          id: record.id,
+          name: record.name,
+          type: record.type || 'Unknown file',
+          size: record.size,
+          sha256: record.sha256,
+          custodyValid,
+          custodyCount: record.custody.length,
+          modules: observedModules,
+          facts: retrievedFacts,
+          explanations,
+        });
+      }
+      setCopilotLiveAnalyses(nextLive);
+      setCopilotToolkitScanLog(scanEntries);
+      setCopilotToolkitScanResults({
+        caseId,
+        scannedAt: new Date().toISOString(),
+        items: scanResults,
+      });
+      await prepareCopilotContext(targetIds, nextLive);
+    } catch (toolkitError) {
+      setCopilotError(toolkitError.message || 'Toolkit observatory scan failed.');
+    } finally {
+      setCopilotBusy(false);
+    }
+  };
+
+  const selectAllCaseRecordsForCopilot = async () => {
+    const allIds = activeRecords.slice(0, 25).map((record) => record.id);
+    setCopilotSelectedIds(allIds);
+    await prepareCopilotContext(allIds);
   };
 
   const verifyCaseInvestigator = async () => {
@@ -790,22 +1081,41 @@ function App() {
     }
   };
 
-  const askCopilot = async (event) => {
-    event.preventDefault();
-    if (!teamCaseRegistered) {
+  const askCopilot = async (event, presetQuestion = null, options = {}) => {
+    if (event) event.preventDefault();
+    const { forceApproved = false } = options || {};
+    if (copilotUsesTeamBackend && !teamCaseRegistered) {
       setCopilotError('Register the open local case for team access before sending a Copilot request.');
       return;
     }
-    if (!copilotApproved) {
+    if (!copilotApproved && !forceApproved) {
       setCopilotError('Review the structured facts and approve their transmission before asking the Copilot.');
+      return;
+    }
+    if (forceApproved && !copilotApproved) setCopilotApproved(true);
+    const requestQuestion = (typeof presetQuestion === 'string' ? presetQuestion : copilotQuestion).trim();
+    if (!requestQuestion) {
+      setCopilotError('Enter an investigation question.');
+      return;
+    }
+    const factsToAnalyze = copilotSelectedFacts.length ? copilotSelectedFacts : copilotFacts;
+    if (!factsToAnalyze.length) {
+      setCopilotError('Load case records or run a Toolkit Scan before sending an investigation question.');
       return;
     }
     setCopilotBusy(true);
     setCopilotError('');
     setCopilotResponse(null);
     try {
-      const requestQuestion = copilotQuestion.trim();
-      const batches = partitionCopilotFacts(requestQuestion, copilotSelectedFacts, caseId);
+      const caseTimeline = createTimelineEvents(caseId, records, timelineIntegrity);
+      const toolkitSummary = {
+        activeEvidenceCount: activeRecords.length,
+        archivedEvidenceCount: archivedRecords.length,
+        savedAnalysisCount,
+        timelineEventCount: caseTimeline.length,
+        toolkitScanLog: copilotToolkitScanLog,
+      };
+      const batches = partitionCopilotFacts(requestQuestion, factsToAnalyze, caseId);
       const responses = [];
       for (let index = 0; index < batches.length; index += 1) {
         const batch = batches[index];
@@ -813,11 +1123,18 @@ function App() {
         let result;
         try {
           result = await callCopilot({
-            supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
-            publishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            accessToken: authSession?.access_token,
+            supabaseUrl: copilotUsesTeamBackend ? import.meta.env.VITE_SUPABASE_URL : '',
+            publishableKey: copilotUsesTeamBackend ? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY : '',
+            accessToken: authSession?.access_token || '',
             action: request.action,
-            payload: { caseNumber: caseId, question: request.question, facts: request.facts },
+            payload: {
+              caseNumber: caseId,
+              caseDetails,
+              toolkitSummary,
+              timelineEvents: caseTimeline.slice(0, 100),
+              question: request.question,
+              facts: request.facts,
+            },
           });
         } catch (batchError) {
           throw new Error(`Copilot request batch ${index + 1} of ${batches.length} failed: ${batchError.message || 'AI service request failed.'}`, { cause: batchError });
@@ -831,7 +1148,18 @@ function App() {
         ...messages,
         { id: messages.length + 1, question: requestQuestion, response },
       ]);
-      setCopilotQuestion('');
+      if (!presetQuestion) setCopilotQuestion('');
+
+      if (autoDocumentCopilot && db && copilotSelectedFacts.length) {
+        try {
+          const finding = makeCopilotFinding(response, requestQuestion, copilotSelectedFacts, 'copilot');
+          await saveCopilotFinding(db, copilotSelectedFacts[0].evidenceId, finding);
+          setRecords(await getCaseRecords(db, caseId));
+          setNotice('AI analysis documented in the encrypted case vault as NEEDS REVIEW. Custodian/investigator verification is required.');
+        } catch {
+          // User can still manually save via button if auto-document fails.
+        }
+      }
     } catch (copilotRequestError) {
       setCopilotError(copilotRequestError.message || 'AI Copilot request failed.');
     } finally {
@@ -845,10 +1173,10 @@ function App() {
     setCopilotBusy(true);
     setCopilotError('');
     try {
-      const finding = makeCopilotFinding(copilotResponse, copilotLatestQuestion, selectedFacts);
+      const finding = makeCopilotFinding(copilotResponse, copilotLatestQuestion, selectedFacts, 'copilot');
       await saveCopilotFinding(db, selectedFacts[0].evidenceId, finding);
       setRecords(await getCaseRecords(db, caseId));
-      setNotice('Copilot finding saved as NEEDS REVIEW. No evidence bytes or analysis results were changed.');
+      setNotice('Copilot finding saved as NEEDS REVIEW. Custodian/investigator verification is required before treating claims as verified.');
     } catch (saveError) {
       setCopilotError(saveError.message || 'Copilot finding could not be saved.');
     } finally {
@@ -856,45 +1184,73 @@ function App() {
     }
   };
 
-  const reviewCopilotFinding = async (record, finding) => {
-    const review = copilotReviews[finding.id] || {};
+  const reviewCopilotFinding = async (record, finding, customReview = null) => {
+    const review = customReview || copilotReviews[finding.id] || {};
+    const verifierName = (review.analyst || custodian || authSession?.user?.email || '').trim();
+    const targetCaseId = record.caseId || caseId;
     setCopilotBusy(true);
     setCopilotError('');
     try {
-      if (!authSession?.access_token) throw new Error('Sign in as an authorized investigator to validate a finding.');
+      if (!review.attested) {
+        throw new Error('Custodian or investigator must check the verification attestation before signing off.');
+      }
+      if (!verifierName) {
+        throw new Error('Enter the custodian or investigator name to verify this AI finding.');
+      }
       const authorization = await callCopilot({
-        supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
-        publishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-        accessToken: authSession.access_token,
+        supabaseUrl: copilotUsesTeamBackend ? import.meta.env.VITE_SUPABASE_URL : '',
+        publishableKey: copilotUsesTeamBackend ? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY : '',
+        accessToken: authSession?.access_token || '',
         action: 'authorize_validation',
-        payload: { caseNumber: caseId },
+        payload: { caseNumber: targetCaseId, investigator: verifierName },
       });
       if (authorization.authorized !== true || !authorization.investigatorId) {
-        throw new Error('Only an authorized case investigator may validate Copilot findings.');
+        throw new Error('Only an authorized custodian or case investigator may validate Copilot findings.');
       }
+      const resolvedStatus = review.status || 'VERIFIED';
       await validateCopilotFinding(db, record.id, finding.id, {
-        status: review.status || 'NEEDS REVIEW',
-        analyst: authorization.investigator,
+        status: resolvedStatus,
+        analyst: authorization.investigator || verifierName,
         investigatorId: authorization.investigatorId,
         notes: review.notes || '',
         independentMethod: review.independentMethod || '',
         authorized: true,
       });
-      setRecords(await getCaseRecords(db, caseId));
-      setNotice('Human finding validation and custody event recorded.');
+      const updated = await getCaseRecords(db, targetCaseId);
+      if (targetCaseId === caseId) setRecords(updated);
+      if (targetCaseId === timelineCaseId) setTimelineRecords(updated);
+      setNotice(`Custodian/investigator verification (${resolvedStatus}) and custody event recorded by ${authorization.investigator || verifierName}.`);
+      return true;
     } catch (reviewError) {
       setCopilotError(reviewError.message || 'Finding validation could not be saved.');
+      return false;
     } finally {
       setCopilotBusy(false);
     }
   };
 
+  const appendVerifiedFindingToReport = (finding) => {
+    const verifiedStatements = [
+      ...(finding.objectiveConclusions || []),
+      ...(finding.interpretations || []),
+    ].map((claim) => `- ${claim.text} [${(claim.evidenceRefs || []).join(', ')}]`);
+    const verifier = finding.validationHistory?.at(-1);
+    const block = [
+      `Verified AI Analysis (${verifier?.analyst || 'Investigator'} · ${verifier?.reviewedAt ? formatDate(verifier.reviewedAt) : 'Verified'}):`,
+      ...verifiedStatements,
+    ].join('\n');
+    setReportConclusions((current) => (current.trim() ? `${current.trim()}\n\n${block}` : block));
+    setNotice('Verified conclusions appended to the Final Investigation Report conclusions field.');
+  };
+
   const downloadCopilotFindings = () => {
     const report = {
-      format: 'ForensiAI Copilot Findings',
+      format: 'ClueBox Odyssey AI Forensic Copilot Documentation Report',
       caseId,
+      caseDetails,
       exportedAt: new Date().toISOString(),
-      notice: 'AI-generated interpretations are suggestions, not verified forensic conclusions.',
+      toolkitScanLog: copilotToolkitScanLog,
+      notice: 'All AI-generated conclusions, analytic statements, connections, workflows, and timeline analyses remain unverified until signed off by a custodian or investigator.',
       findings: savedCopilotFindings.map(({ evidenceRecord, ...finding }) => ({
         ...finding,
         savedOnEvidenceId: evidenceRecord.id,
@@ -905,9 +1261,137 @@ function App() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${caseId.replace(/[^\w.-]+/g, '-')}-copilot-findings.json`;
+    link.download = `${caseId.replace(/[^\w.-]+/g, '-')}-copilot-documentation.json`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const generateAiTimelineAnalysis = async () => {
+    if (!db || !timelineCaseId) return;
+    const targetRecords = timelineRecords.filter((record) => !record.archivedAt);
+    if (!targetRecords.length) {
+      setAiTimelineError('Add or select active evidence records in this case before generating an AI timeline analysis.');
+      return;
+    }
+    setAiTimelineBusy(true);
+    setAiTimelineError('');
+    try {
+      const targetDetails = timelineCaseId === caseId ? caseDetails : await getCaseDetails(db, timelineCaseId);
+      const facts = await buildCopilotEvidenceContext(
+        timelineCaseId,
+        targetRecords.slice(0, 25),
+        async (record) => {
+          await downloadEvidence(db, record.id);
+          return true;
+        },
+        (custody) => verifyCustody(custody),
+        {
+          caseDetails: targetDetails,
+          timelineEvents,
+          liveAnalyses: timelineCaseId === caseId ? copilotLiveAnalyses : {},
+        },
+      );
+      const question = 'Generate an AI-analyzed forensic version of the investigation timeline correlating all evidence metadata, custody logs, toolkit reports, and timestamps, identifying objective conclusions, cross-artifact connections, gaps/anomalies, and a verification workflow.';
+      const result = await callCopilot({
+        supabaseUrl: copilotUsesTeamBackend ? import.meta.env.VITE_SUPABASE_URL : '',
+        publishableKey: copilotUsesTeamBackend ? import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY : '',
+        accessToken: authSession?.access_token || '',
+        action: 'analyze_timeline',
+        payload: {
+          caseNumber: timelineCaseId,
+          caseDetails: targetDetails,
+          question,
+          facts,
+          timelineEvents: timelineEvents.slice(0, 100),
+        },
+      });
+      const validated = validateCopilotResponse(result, facts);
+      const generatedAt = new Date().toISOString();
+      const finding = makeCopilotFinding(validated, question, facts, 'timeline');
+      await saveCopilotFinding(db, facts[0].evidenceId, finding);
+      const refreshed = await getCaseRecords(db, timelineCaseId);
+      setTimelineRecords(refreshed);
+      if (timelineCaseId === caseId) setRecords(refreshed);
+      setAiTimelineAnalysis({
+        caseId: timelineCaseId,
+        findingId: finding.id,
+        generatedAt,
+        response: validated,
+        facts,
+        sourceEventCount: timelineEvents.length,
+      });
+      setAiTimelineSavedFinding({
+        evidenceId: facts[0].evidenceId,
+        findingId: finding.id,
+        status: 'NEEDS REVIEW',
+        validationHistory: [],
+      });
+      setAiTimelineReview((current) => ({
+        ...current,
+        analyst: current.analyst || custodian || authSession?.user?.email || '',
+        attested: false,
+      }));
+      setNotice('AI-analyzed timeline generated and documented in the case vault as NEEDS REVIEW. Custodian/investigator verification is required.');
+    } catch (timelineAiErr) {
+      setAiTimelineError(timelineAiErr.message || 'Could not generate AI-analyzed timeline.');
+    } finally {
+      setAiTimelineBusy(false);
+    }
+  };
+
+  const verifyAiTimelineAnalysis = async (event) => {
+    event.preventDefault();
+    if (!aiTimelineSavedFinding) return;
+    const targetRecord = timelineRecords.find((item) => item.id === aiTimelineSavedFinding.evidenceId);
+    const targetFinding = targetRecord?.copilotFindings?.find((item) => item.id === aiTimelineSavedFinding.findingId);
+    if (!targetRecord || !targetFinding) {
+      setAiTimelineError('Could not locate the documented AI timeline record in the vault.');
+      return;
+    }
+    setAiTimelineError('');
+    const ok = await reviewCopilotFinding(targetRecord, targetFinding, aiTimelineReview);
+    if (ok) {
+      setAiTimelineSavedFinding((current) => current ? { ...current, status: aiTimelineReview.status } : current);
+    } else {
+      setAiTimelineError('Custodian/investigator verification failed. Check name, notes, verification method, and attestation.');
+    }
+  };
+
+  const downloadAiTimelineReport = () => {
+    if (!aiTimelineAnalysis) return;
+    const targetRecord = aiTimelineSavedFinding
+      ? timelineRecords.find((item) => item.id === aiTimelineSavedFinding.evidenceId)
+      : null;
+    const documentedFinding = targetRecord?.copilotFindings?.find((item) => item.id === aiTimelineSavedFinding?.findingId);
+    const payload = {
+      format: 'ClueBox Odyssey AI-Analyzed Investigation Timeline Report',
+      caseId: aiTimelineAnalysis.caseId,
+      generatedAt: aiTimelineAnalysis.generatedAt,
+      verificationStatus: documentedFinding?.validationStatus || aiTimelineSavedFinding?.status || 'NEEDS REVIEW',
+      verificationHistory: documentedFinding?.validationHistory || [],
+      sourceTimelineEventCount: aiTimelineAnalysis.sourceEventCount,
+      aiAnalysis: aiTimelineAnalysis.response,
+      sourceTimelineEvents: timelineEvents,
+    };
+    const safeCaseId = (aiTimelineAnalysis.caseId || 'case').replace(/[^\w.-]+/g, '-');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${safeCaseId}-ai-analyzed-timeline-report.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const jumpToWorkflowModule = (moduleLabel) => {
+    const normalized = String(moduleLabel || '').toLowerCase();
+    if (normalized.includes('exif')) navigateToWorkspace('exif');
+    else if (normalized.includes('registry')) navigateToWorkspace('registry');
+    else if (normalized.includes('pcap') || normalized.includes('network')) navigateToWorkspace('pcap');
+    else if (normalized.includes('sqlite') || normalized.includes('database')) navigateToWorkspace('sqlite');
+    else if (normalized.includes('timeline')) navigateToWorkspace('timeline');
+    else if (normalized.includes('report')) navigateToWorkspace('reports');
+    else if (normalized.includes('case')) navigateToWorkspace('cases');
+    else navigateToWorkspace('evidence');
   };
 
   const downloadTimeline = (format) => {
@@ -1512,6 +1996,514 @@ function App() {
     );
   }
 
+  const activeToolkitScan = copilotToolkitScanResults?.caseId === caseId ? copilotToolkitScanResults : null;
+  const unverifiedCopilotCount = savedCopilotFindings.filter((item) => item.validationStatus !== 'VERIFIED').length;
+
+  const renderCopilotChatTab = ({ isMini = false, onSwitchTab }) => (
+    <div className={`copilot-tab-pane copilot-chat-pane ${isMini ? 'copilot-chat-pane-mini' : 'copilot-chat-pane-full'}`}>
+      <div className="copilot-chat-context-bar">
+        <span className={`copilot-chat-context-pill ${copilotApproved && copilotSelectedFacts.length ? 'copilot-chat-context-ready' : ''}`}>
+          {copilotSelectedFacts.length
+            ? copilotApproved
+              ? `${copilotSelectedFacts.length} verified facts approved`
+              : `${copilotSelectedFacts.length} facts staged (approval needed)`
+            : 'No evidence facts loaded yet'}
+        </span>
+        <div className="copilot-chat-context-actions">
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => onSwitchTab('toolkit')}
+          >
+            {copilotSelectedFacts.length ? 'Manage facts & scan' : 'Open Toolkit Scan'}
+          </button>
+          {savedCopilotFindings.length > 0 && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => onSwitchTab('verify')}
+            >
+              Verify ({unverifiedCopilotCount > 0 ? `${unverifiedCopilotCount} pending` : savedCopilotFindings.length})
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="copilot-chat-conversation" ref={isMini ? copilotConversationRef : undefined} aria-label="Copilot conversation">
+        {!copilotConversation.length && (
+          <div className="copilot-welcome">
+            <span className="copilot-welcome-mark" aria-hidden="true">AI</span>
+            <h3>Full-Toolkit Forensic Observatory</h3>
+            <p>Use <strong>Toolkit &amp; Facts</strong> to scan evidence for extracted facts and plain-English explanations, then ask Copilot for objective conclusions, cross-artifact connections, viable next steps, and structured workflows.</p>
+            {caseId && activeRecords.length > 0 && !copilotFacts.length && (
+              <div className="copilot-welcome-actions">
+                <button
+                  type="button"
+                  className="button button-accent"
+                  disabled={copilotBusy}
+                  onClick={async () => {
+                    onSwitchTab('toolkit');
+                    await runCopilotToolkitScan();
+                  }}
+                >
+                  Run Toolkit Scan (Facts &amp; Explanations)
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {copilotConversation.map(({ id, question, response }) => (
+          <article className="copilot-chat-turn" key={id}>
+            <div className="copilot-user-message"><span>You</span><p>{question}</p></div>
+            <div className="copilot-assistant-message">
+              <div className="copilot-result-heading"><h3>Copilot Forensic Analysis</h3><span>NEEDS CUSTODIAN VERIFICATION</span></div>
+              {response.summary && (
+                <p className="copilot-executive-summary">{response.summary}</p>
+              )}
+              {(response.insufficientEvidence || response.unsupportedClaims.length > 0) && (
+                <p className="copilot-insufficient"><strong>INSUFFICIENT EVIDENCE — NEEDS REVIEW</strong> Unsupported or uncited AI claims are excluded below.</p>
+              )}
+              {[
+                ['Objective Conclusions', response.objectiveConclusions || []],
+                ['Analytic Statements & Interpretations', response.interpretations || []],
+                ['Cross-Artifact & Log Connections', response.connections || []],
+                ['Investigative Leads', response.investigativeLeads || []],
+                ['Viable Next Steps & Recommendations', response.recommendations || []],
+                ['Gaps, Anomalies & Limitations', response.gapsAndAnomalies || []],
+              ].map(([heading, claims]) => (
+                <section key={heading}>
+                  <h4>{heading}</h4>
+                  {claims.length ? claims.map((claim, index) => (
+                    <article className="copilot-claim" key={`${heading}-${index}`}>
+                      <p>{claim.text}</p>
+                      <small>Evidence references: {claim.evidenceRefs.join(', ')}</small>
+                    </article>
+                  )) : <p className="copilot-empty">No supported items returned.</p>}
+                </section>
+              ))}
+              {(response.workflow?.length > 0) && (
+                <section>
+                  <h4>Recommended Investigation Workflow</h4>
+                  <ol className="copilot-workflow-list">
+                    {response.workflow.map((step) => (
+                      <li className="copilot-workflow-step" key={`${step.step}-${step.title}`}>
+                        <div className="copilot-workflow-head">
+                          <strong>Step {step.step}: {step.title}</strong>
+                          <button
+                            type="button"
+                            className="copilot-module-jump"
+                            onClick={() => jumpToWorkflowModule(step.module)}
+                          >
+                            {step.module} →
+                          </button>
+                        </div>
+                        <p>{step.action}</p>
+                        <small>Evidence references: {step.evidenceRefs.join(', ')}</small>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+              {(response.analyzedTimeline?.length > 0) && (
+                <section>
+                  <h4>AI-Analyzed Timeline Highlights</h4>
+                  <div className="copilot-timeline-highlights">
+                    {response.analyzedTimeline.map((item, idx) => (
+                      <article className="copilot-claim" key={`tl-${idx}`}>
+                        <div className="copilot-workflow-head">
+                          <strong>{item.timestamp}</strong>
+                          <span className={`ai-sig-badge ai-sig-${item.significance.toLowerCase()}`}>{item.significance}</span>
+                        </div>
+                        <p><strong>{item.eventSummary}</strong> — {item.analysis}</p>
+                        <small>Evidence references: {item.evidenceRefs.join(', ')}</small>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+              <details className="copilot-observed-details">
+                <summary>Observed Evidence &amp; Logs ({response.observedEvidence.length})</summary>
+                {response.observedEvidence.map((fact) => (
+                  <article className="copilot-citation" key={fact.referenceId}>
+                    <strong>{fact.referenceId} · {fact.caseId} / {fact.filename} · SHA-256 {fact.sha256}</strong>
+                    <span>{fact.evidenceId} · {fact.module} · {fact.artifactType}: {fact.artifactReference}</span>
+                    <span>Observed value: {fact.value}</span>
+                    <small>Integrity: {fact.integrityStatus}; custody: {fact.custodyStatus}; human validation: {fact.validationStatus}</small>
+                  </article>
+                ))}
+              </details>
+              {response.unsupportedClaims.length > 0 && (
+                <details className="copilot-unsupported">
+                  <summary>Excluded unsupported claims ({response.unsupportedClaims.length})</summary>
+                  <ul>{response.unsupportedClaims.map((claim, index) => <li key={index}>{claim.text} — {claim.reason}</li>)}</ul>
+                </details>
+              )}
+              {response === copilotResponse && (
+                <div className="copilot-result-actions">
+                  <button type="button" className="button button-dark" onClick={saveCurrentCopilotFinding} disabled={copilotBusy}>Document &amp; Save as NEEDS REVIEW</button>
+                  <button type="button" className="button button-dark" onClick={() => onSwitchTab('verify')}>Open Verification Gate</button>
+                  <button
+                    type="button"
+                    className="button button-dark"
+                    onClick={() => {
+                      setTimelineViewMode('ai');
+                      navigateToWorkspace('timeline');
+                    }}
+                  >
+                    Open AI-Analyzed Timeline
+                  </button>
+                </div>
+              )}
+            </div>
+          </article>
+        ))}
+        {copilotBusy && <p className="copilot-thinking" role="status">Processing forensic analysis (extended timeout active for thorough review)…</p>}
+        {copilotError && <p className="copilot-error" role="alert">{copilotError}</p>}
+      </div>
+
+      {copilotFacts.length > 0 && copilotApproved && (
+        <div className="copilot-quick-prompts" aria-label="Quick forensic analysis actions">
+          {[
+            ['Objective Conclusions', 'Synthesize all verified records, toolkit outputs, and custody logs into objective forensic conclusions with exact evidence citations.'],
+            ['Cross-Artifact Connections', 'Identify all cross-artifact connections, shared timestamps, custody links, and correlations across the case records and logs.'],
+            ['Workflow & Next Steps', 'Lay out a prioritized step-by-step forensic workflow and viable next steps across the ClueBox Odyssey toolkit modules.'],
+            ['Audit Logs & Timeline', 'Audit all chain-of-custody logs, timestamp uncertainties, anomalies, and evidentiary gaps across the investigation timeline.'],
+          ].map(([label, promptText]) => (
+            <button
+              key={label}
+              type="button"
+              className="copilot-quick-chip"
+              disabled={copilotBusy || !copilotAccessReady}
+              onClick={() => askCopilot(null, promptText)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <form
+        className="copilot-question-form copilot-chat-composer"
+        onSubmit={askCopilot}
+        aria-label="Ask the AI Copilot"
+      >
+        <label htmlFor={isMini ? 'copilot-question' : 'copilot-workspace-question'}>Investigation question</label>
+        <textarea
+          ref={isMini ? copilotQuestionRef : undefined}
+          id={isMini ? 'copilot-question' : 'copilot-workspace-question'}
+          rows={isMini ? '2' : '3'}
+          maxLength="2000"
+          value={copilotQuestion}
+          onChange={(event) => setCopilotQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          aria-describedby={isMini ? 'copilot-composer-help' : 'copilot-workspace-composer-help'}
+          placeholder="Ask for objective conclusions, cross-record connections, timeline audit, or an investigation workflow…"
+          required
+        />
+        <div className="copilot-composer-actions">
+          <small id={isMini ? 'copilot-composer-help' : 'copilot-workspace-composer-help'}>
+            {!copilotFacts.length
+              ? 'Open Toolkit & Facts to scan evidence, then approve before sending. Ctrl/⌘ + Enter sends.'
+              : !copilotApproved
+                ? 'Approve selected facts in Toolkit & Facts before sending.'
+                : copilotUsesTeamBackend && !teamCaseRegistered
+                  ? 'Register the open local case for team access before sending.'
+                  : !copilotConfigured
+                    ? copilotAvailability
+                    : 'Only approved structured facts & logs are analyzed. Extended 5-minute timeout enabled.'}
+          </small>
+          <button
+            type="submit"
+            className="button button-accent"
+            disabled={copilotBusy || !caseId || !copilotApproved || !copilotApprovedFactIds.length || !copilotAccessReady}
+          >
+            {copilotBusy ? 'Analyzing…' : 'Send'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+
+  const renderCopilotToolkitTab = ({ onSwitchTab }) => (
+    <div className="copilot-tab-pane copilot-toolkit-pane">
+      {copilotError && <p className="copilot-error" role="alert">{copilotError}</p>}
+      {!caseId ? (
+        <p className="copilot-empty">Open a case to grant Copilot observatory access to evidence, logs, and toolkit modules.</p>
+      ) : (
+        <>
+          <div className="copilot-toolkit-bar">
+            <button
+              type="button"
+              className="button button-accent"
+              onClick={runCopilotToolkitScan}
+              disabled={copilotBusy || !activeRecords.length}
+            >
+              {copilotBusy ? 'Scanning evidence & retrieving facts…' : 'Run Toolkit Scan (Facts & Explanations)'}
+            </button>
+            <button
+              type="button"
+              className="button button-dark"
+              onClick={selectAllCaseRecordsForCopilot}
+              disabled={copilotBusy || !activeRecords.length}
+            >
+              Load all records &amp; logs ({activeRecords.length})
+            </button>
+          </div>
+
+          {activeToolkitScan && activeToolkitScan.items.length > 0 && (
+            <div className="copilot-scan-results" aria-label="Toolkit scan retrieved facts and explanations">
+              <div className="copilot-result-heading">
+                <h3>Toolkit Scan: Retrieved Facts &amp; Explanations ({activeToolkitScan.items.length} file{activeToolkitScan.items.length === 1 ? '' : 's'})</h3>
+                <span>Scanned {formatDate(activeToolkitScan.scannedAt)}</span>
+              </div>
+              <div className="copilot-scan-cards">
+                {activeToolkitScan.items.map((item) => (
+                  <article className="copilot-scan-card" key={`scan-card-${item.id}`}>
+                    <div className="copilot-scan-card-head">
+                      <div>
+                        <strong>{item.name}</strong>
+                        <small>{item.id} · {formatBytes(item.size)} · SHA-256 {item.sha256.slice(0, 16)}…</small>
+                      </div>
+                      <span className={`validation-status ${item.custodyValid ? 'validation-verified' : 'validation-needs-review'}`}>
+                        {item.modules.length ? item.modules.join(' · ') : 'Baseline Metadata & Custody'}
+                      </span>
+                    </div>
+                    <div className="copilot-scan-explanations">
+                      <h4>Forensic Explanation</h4>
+                      <ul>
+                        {item.explanations.map((line, idx) => <li key={`exp-${item.id}-${idx}`}>{line}</li>)}
+                      </ul>
+                    </div>
+                    <details className="copilot-scan-facts" open>
+                      <summary>Retrieved Evidence Facts ({item.facts.length})</summary>
+                      <dl>
+                        {item.facts.map((f, idx) => (
+                          <div className="copilot-scan-fact-row" key={`fact-${item.id}-${idx}`}>
+                            <dt><span>{f.module}</span> {f.label}</dt>
+                            <dd>{f.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </details>
+                  </article>
+                ))}
+              </div>
+              {copilotFacts.length > 0 && (
+                <div className="copilot-result-actions">
+                  <button
+                    type="button"
+                    className="button button-accent"
+                    disabled={copilotBusy || !copilotAccessReady}
+                    onClick={async () => {
+                      onSwitchTab('chat');
+                      await askCopilot(
+                        null,
+                        'Provide a detailed forensic explanation of all retrieved toolkit scan facts across these evidence records, highlight cross-artifact connections and integrity/custody findings, and lay out a concrete verification workflow.',
+                        { forceApproved: true },
+                      );
+                    }}
+                  >
+                    Approve &amp; Ask AI for Deep Explanation
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          <details className="copilot-context" open={!activeToolkitScan}>
+            <summary>Select Evidence Records ({copilotSelectedIds.length}/{activeRecords.length} selected)</summary>
+            <fieldset className="copilot-evidence-select" disabled={copilotBusy}>
+              <legend>Evidence, custody logs, and toolkit results — {caseId}</legend>
+              {!activeRecords.length ? <p>No active evidence records are saved in this local case.</p> : activeRecords.map((record) => (
+                <label key={record.id} className="copilot-evidence-option">
+                  <input
+                    type="checkbox"
+                    checked={copilotSelectedIds.includes(record.id)}
+                    onChange={(event) => {
+                      setCopilotSelectedIds((ids) => event.target.checked
+                        ? [...ids, record.id].slice(0, 25)
+                        : ids.filter((id) => id !== record.id));
+                      setCopilotFacts([]);
+                      setCopilotApprovedFactIds([]);
+                      setCopilotApproved(false);
+                      setCopilotResponse(null);
+                    }}
+                  />
+                  <span><strong>{record.name}</strong><small>{record.id} · SHA-256 {record.sha256.slice(0, 16)}… · {record.custody.length} custody logs</small></span>
+                  <small>{[
+                    (record.exif || copilotLiveAnalyses[record.id]?.exif) && 'EXIF',
+                    (record.registryAnalysis || copilotLiveAnalyses[record.id]?.registryAnalysis) && 'Registry',
+                    (record.pcapAnalysis || copilotLiveAnalyses[record.id]?.pcapAnalysis) && 'PCAP',
+                    (record.sqliteAnalysis || copilotLiveAnalyses[record.id]?.sqliteAnalysis) && 'SQLite',
+                  ].filter(Boolean).join(' · ') || 'Inventory & custody logs'}</small>
+                </label>
+              ))}
+            </fieldset>
+            <button type="button" className="button button-dark" onClick={() => prepareCopilotContext()} disabled={copilotBusy || !copilotSelectedIds.length}>
+              {copilotBusy ? 'Verifying evidence & logs…' : 'Verify & stage selected facts'}
+            </button>
+          </details>
+
+          {copilotFacts.length > 0 && (
+            <div className="copilot-preview">
+              <div className="copilot-result-heading">
+                <h3>Staged Structured Facts &amp; Logs ({copilotApprovedFactIds.length}/{copilotFacts.length})</h3>
+                <button type="button" className="text-button" onClick={() => onSwitchTab('chat')}>Go to Chat →</button>
+              </div>
+              <p>Original evidence bytes and encryption keys stay local. Approve checked facts below to enable AI chat analysis.</p>
+              <label className="copilot-approval">
+                <input type="checkbox" checked={copilotApproved} disabled={!copilotApprovedFactIds.length} onChange={(event) => setCopilotApproved(event.target.checked)} />
+                I reviewed and approve granting AI Copilot observatory access to these checked structured facts and logs.
+              </label>
+              <label className="copilot-approval">
+                <input type="checkbox" checked={autoDocumentCopilot} onChange={(event) => setAutoDocumentCopilot(event.target.checked)} />
+                Automatically document every Copilot analysis in the encrypted case vault (as NEEDS REVIEW for custodian/investigator sign-off).
+              </label>
+              <p className="copilot-request-size" role="status" aria-live="polite">
+                {copilotSelectedFacts.length
+                  ? copilotQuestion.trim()
+                    ? `${copilotSelectedFacts.length} selected facts will be sent in ${copilotRequestBatches.length} request${copilotRequestBatches.length === 1 ? '' : 's'}: ${copilotRequestBatches.map((batch) => `${getCopilotRequestSize(copilotQuestion, batch, caseId).toLocaleString()} bytes`).join(', ')} (maximum ${MAX_COPILOT_REQUEST_BYTES.toLocaleString()} bytes each).`
+                    : `${copilotSelectedFacts.length} facts & logs selected and ready for analysis.`
+                  : 'No facts selected. Choose the facts relevant to your question.'}
+              </p>
+              <details className="copilot-observed-details">
+                <summary>Inspect individual staged facts ({copilotFacts.length})</summary>
+                <ul className="copilot-fact-list">
+                  {copilotFacts.map((fact) => (
+                    <li key={fact.referenceId}>
+                      <label className="copilot-fact-choice">
+                        <input
+                          type="checkbox"
+                          checked={copilotApprovedFactIds.includes(fact.referenceId)}
+                          onChange={(event) => {
+                            setCopilotApprovedFactIds((ids) => event.target.checked
+                              ? [...ids, fact.referenceId]
+                              : ids.filter((id) => id !== fact.referenceId));
+                            setCopilotApproved(false);
+                            setCopilotResponse(null);
+                          }}
+                        />
+                        <span>
+                          <strong>{fact.referenceId} · {fact.module} / {fact.artifactType}</strong>
+                          <code>{fact.filename} · {fact.evidenceId} · SHA-256 {fact.sha256} · {fact.artifactReference}</code>
+                          <span>{fact.value}</span>
+                          <small>{fact.integrityStatus}; {fact.custodyStatus}; validation: {fact.validationStatus}</small>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  const renderCopilotVerifyTab = () => (
+    <div className="copilot-tab-pane copilot-verify-pane">
+      {copilotError && <p className="copilot-error" role="alert">{copilotError}</p>}
+      <div className="copilot-result-heading">
+        <h3>Documented AI Findings &amp; Verification Gate ({savedCopilotFindings.length})</h3>
+        {savedCopilotFindings.length > 0 && (
+          <button type="button" className="text-button" onClick={downloadCopilotFindings}>Download full AI documentation report</button>
+        )}
+      </div>
+      {!savedCopilotFindings.length ? (
+        <p className="copilot-empty">No AI analyses have been documented for this case yet. Run an AI Copilot query or generate an AI-Analyzed Timeline to document findings for custodian/investigator verification.</p>
+      ) : (
+        <div className="copilot-saved-findings">
+          {savedCopilotFindings.map(({ evidenceRecord, ...finding }) => {
+            const review = copilotReviews[finding.id] || {};
+            const defaultVerifier = review.analyst ?? custodian ?? authSession?.user?.email ?? '';
+            const isVerified = finding.validationStatus === 'VERIFIED';
+            return (
+              <article className="copilot-saved-finding" key={finding.id}>
+                <div className="copilot-result-heading">
+                  <strong>{finding.analysisType === 'timeline' ? '[AI Timeline] ' : ''}{finding.question}</strong>
+                  <span className={`validation-status validation-${finding.validationStatus.toLowerCase().replaceAll(' ', '-')}`}>{finding.validationStatus}</span>
+                </div>
+                <p>
+                  Documented with {finding.observedEvidence.length} verified facts/logs
+                  {finding.objectiveConclusions?.length ? ` · ${finding.objectiveConclusions.length} conclusions` : ''}
+                  {finding.connections?.length ? ` · ${finding.connections.length} connections` : ''}
+                  {finding.workflow?.length ? ` · ${finding.workflow.length} workflow steps` : ''}.
+                  {' '}Custodians/investigators must verify AI work before treating it as a confirmed finding.
+                </p>
+                {isVerified && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => appendVerifiedFindingToReport(finding)}
+                  >
+                    Copy verified conclusions to Final Investigation Report
+                  </button>
+                )}
+                <form
+                  className="copilot-review-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    reviewCopilotFinding(evidenceRecord, finding, {
+                      ...review,
+                      status: review.status || 'VERIFIED',
+                      analyst: defaultVerifier,
+                    });
+                  }}
+                >
+                  <label>Custodian / Investigator Name
+                    <input
+                      required
+                      value={defaultVerifier}
+                      placeholder="Enter verifying custodian or investigator name"
+                      onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], analyst: event.target.value } }))}
+                    />
+                  </label>
+                  <label>Verification Status
+                    <select value={review.status || 'VERIFIED'} onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], status: event.target.value } }))}>
+                      <option>VERIFIED</option><option>MISMATCH</option><option>NEEDS REVIEW</option>
+                    </select>
+                  </label>
+                  <label>Verification Notes
+                    <textarea required rows="2" placeholder="Document what was verified or disputed against raw artifacts" value={review.notes || ''} onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], notes: event.target.value } }))} />
+                  </label>
+                  <label>Independent Verification Tool or Method
+                    <input required placeholder="e.g. Manual SHA-256 check, EXIF inspection, REGF hive review" value={review.independentMethod || ''} onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], independentMethod: event.target.value } }))} />
+                  </label>
+                  <label className="copilot-approval">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(review.attested)}
+                      onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], attested: event.target.checked } }))}
+                    />
+                    I attest as custodian/investigator that I independently verified this AI analysis against the underlying evidence and logs.
+                  </label>
+                  <button
+                    type="submit"
+                    className="button button-dark"
+                    disabled={copilotBusy || !review.attested || !defaultVerifier.trim()}
+                  >
+                    Verify &amp; Record Custody Sign-Off
+                  </button>
+                </form>
+                {finding.validationHistory?.map((entry, index) => (
+                  <p className="copilot-validation-history" key={`${finding.id}-${index}`}>
+                    {entry.status} by {entry.analyst} ({entry.investigatorId}) on {formatDate(entry.reviewedAt)} · {entry.independentMethod}
+                  </p>
+                ))}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div ref={appRootRef} className={`locker-app ${sidebarCollapsed ? 'locker-app-collapsed' : ''}`} data-active-workspace={activeWorkspace}>
       <aside className="command-sidebar" data-scroll-region="sidebar">
@@ -1598,6 +2590,41 @@ function App() {
               Open case <Icon name="arrow" size={16} />
             </button>
           </form>
+          <div className="case-dropdown-wrap" ref={caseDropdownRef}>
+            <button
+              type="button"
+              className="button button-dark case-dropdown-trigger"
+              aria-haspopup="menu"
+              aria-expanded={caseDropdownOpen}
+              onClick={() => setCaseDropdownOpen((open) => !open)}
+              disabled={!db}
+            >
+              Cases ({availableCases.length}) <Icon name="chevron" size={15} />
+            </button>
+            {caseDropdownOpen && (
+              <div className="case-dropdown-menu" role="menu" aria-label="Saved cases list">
+                {availableCases.length === 0 ? (
+                  <p className="case-dropdown-empty">No saved cases yet.</p>
+                ) : (
+                  <ul className="case-dropdown-list">
+                    {availableCases.map((savedCase) => (
+                      <li key={savedCase}>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={`case-dropdown-item ${savedCase === caseId ? 'case-dropdown-item-active' : ''}`}
+                          onClick={() => selectCaseFromDropdown(savedCase)}
+                        >
+                          <span>{savedCase}</span>
+                          {savedCase === caseId && <small>Active</small>}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
           <div className="case-context">
             <span className="case-context-label">CURRENT CASE</span>
             <strong>{caseDetails?.title || caseId || 'No case selected'}</strong>
@@ -1605,6 +2632,81 @@ function App() {
             {caseDetails?.leadInvestigator && <small>Lead: {caseDetails.leadInvestigator}</small>}
             {caseDetails && <span className={`case-status-badge case-status-${caseDetails.status.toLowerCase().replaceAll(' ', '-')}`}>{caseDetails.status}</span>}
           </div>
+          {casePopupOpen && caseId && (
+            <div
+              className="evidence-action-backdrop case-popup-backdrop"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setCasePopupOpen(false);
+              }}
+            >
+              <div className="evidence-action-dialog case-popup-dialog" role="dialog" aria-modal="true" aria-labelledby="case-popup-title">
+                <div className="case-popup-header">
+                  <div>
+                    <p className="eyebrow">CASE QUICK VIEW</p>
+                    <h2 id="case-popup-title">{caseDetails?.title || caseId}</h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Close case popup"
+                    onClick={() => setCasePopupOpen(false)}
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                </div>
+                <dl className="case-popup-meta">
+                  <div>
+                    <dt>Case ID</dt>
+                    <dd>{caseId}</dd>
+                  </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{caseDetails?.status || 'Open'}</dd>
+                  </div>
+                  <div>
+                    <dt>Lead Investigator</dt>
+                    <dd>{caseDetails?.leadInvestigator || 'Not assigned'}</dd>
+                  </div>
+                  <div>
+                    <dt>Evidence Files</dt>
+                    <dd>{activeRecords.length} active{archivedRecords.length ? ` · ${archivedRecords.length} archived` : ''}</dd>
+                  </div>
+                </dl>
+                {caseDetails?.description && (
+                  <p className="case-popup-description">{caseDetails.description}</p>
+                )}
+                <div className="evidence-action-buttons">
+                  <button
+                    type="button"
+                    className="button button-dark"
+                    onClick={() => {
+                      setCasePopupOpen(false);
+                      navigateToWorkspace('cases');
+                    }}
+                  >
+                    Case Management
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-accent"
+                    onClick={() => {
+                      setCasePopupOpen(false);
+                      navigateToWorkspace('evidence');
+                    }}
+                  >
+                    Evidence Locker
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-dark"
+                    onClick={() => setCasePopupOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {caseId && (
             <div className="team-case-registration">
               <button
@@ -1752,6 +2854,52 @@ function App() {
           </div>
         </section>}
 
+        {activeWorkspace === 'copilot' && (
+          <section className="copilot-workspace-section" aria-labelledby="copilot-workspace-title">
+            <header className="copilot-workspace-header">
+              <div>
+                <p className="eyebrow">AI FORENSIC OBSERVATORY · {caseId || 'NO CASE OPEN'}</p>
+                <h2 id="copilot-workspace-title">AI Forensic Copilot Workspace</h2>
+                <p>{copilotAvailability}</p>
+              </div>
+              <div className="copilot-workspace-tabs" role="tablist" aria-label="AI Copilot workspace sections">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={copilotWorkspaceTab === 'chat'}
+                  className={`copilot-minitab-btn ${copilotWorkspaceTab === 'chat' ? 'copilot-minitab-btn-active' : ''}`}
+                  onClick={() => setCopilotWorkspaceTab('chat')}
+                >
+                  Chat &amp; Analysis {copilotConversation.length > 0 ? `(${copilotConversation.length})` : ''}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={copilotWorkspaceTab === 'toolkit'}
+                  className={`copilot-minitab-btn ${copilotWorkspaceTab === 'toolkit' ? 'copilot-minitab-btn-active' : ''}`}
+                  onClick={() => setCopilotWorkspaceTab('toolkit')}
+                >
+                  Toolkit Scan &amp; Facts {copilotFacts.length > 0 ? `(${copilotFacts.length})` : ''}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={copilotWorkspaceTab === 'verify'}
+                  className={`copilot-minitab-btn ${copilotWorkspaceTab === 'verify' ? 'copilot-minitab-btn-active' : ''}`}
+                  onClick={() => setCopilotWorkspaceTab('verify')}
+                >
+                  Verify &amp; Log {savedCopilotFindings.length > 0 ? `(${savedCopilotFindings.length})` : ''}
+                </button>
+              </div>
+            </header>
+            <div className="copilot-workspace-body">
+              {copilotWorkspaceTab === 'chat' && renderCopilotChatTab({ isMini: false, onSwitchTab: setCopilotWorkspaceTab })}
+              {copilotWorkspaceTab === 'toolkit' && renderCopilotToolkitTab({ onSwitchTab: setCopilotWorkspaceTab })}
+              {copilotWorkspaceTab === 'verify' && renderCopilotVerifyTab()}
+            </div>
+          </section>
+        )}
+
         {copilotPanelOpen && appRootRef.current && createPortal(
           <section
             className={`copilot-section copilot-chat-panel ${copilotPanelExpanded ? 'copilot-chat-expanded' : ''} ${copilotPanelMinimized ? 'copilot-chat-minimized' : ''}`}
@@ -1767,9 +2915,18 @@ function App() {
                   <h2 id="copilot-title">AI Forensic Copilot</h2>
                   <span>{caseId ? `Case ${caseId}` : 'No case selected'}</span>
                 </div>
-                <span className={`copilot-availability ${copilotConfigured ? 'copilot-available' : ''}`} role="status">{copilotAvailability}</span>
+                <span className={`copilot-availability ${copilotConfigured ? 'copilot-available' : ''}`} role="status">{copilotConfigured ? 'Ready' : 'Offline'}</span>
               </div>
               <div className="copilot-panel-controls">
+                <button
+                  type="button"
+                  className="copilot-panel-control copilot-panel-control-text"
+                  title="Open full AI Copilot sidebar tab"
+                  onClick={() => {
+                    navigateToWorkspace('copilot');
+                    setCopilotPanelOpen(false);
+                  }}
+                >Full tab</button>
                 <button
                   type="button"
                   className="copilot-panel-control"
@@ -1791,231 +2948,44 @@ function App() {
               </div>
             </header>
 
-            {!copilotPanelMinimized && <div className="copilot-chat-body">
-              <div className="copilot-chat-conversation" ref={copilotConversationRef} aria-label="Copilot conversation">
-                {!copilotConversation.length && (
-                  <div className="copilot-welcome">
-                    <span className="copilot-welcome-mark" aria-hidden="true">AI</span>
-                    <h3>Evidence-grounded assistance</h3>
-                    <p>Select evidence, verify and approve the structured facts, then ask a question. The Copilot uses the secure service and returns cited leads for human review.</p>
-                  </div>
-                )}
-                {copilotConversation.map(({ id, question, response }) => (
-                  <article className="copilot-chat-turn" key={id}>
-                    <div className="copilot-user-message"><span>You</span><p>{question}</p></div>
-                    <div className="copilot-assistant-message">
-                      <div className="copilot-result-heading"><h3>Copilot response</h3><span>NEEDS REVIEW</span></div>
-                      {(response.insufficientEvidence || response.unsupportedClaims.length > 0) && (
-                        <p className="copilot-insufficient"><strong>INSUFFICIENT EVIDENCE — NEEDS REVIEW</strong> Unsupported or uncited AI claims are excluded below.</p>
-                      )}
-                      <section>
-                        <h4>Observed Evidence</h4>
-                        {response.observedEvidence.map((fact) => (
-                          <article className="copilot-citation" key={fact.referenceId}>
-                            <strong>{fact.referenceId} · {fact.caseId} / {fact.filename} · SHA-256 {fact.sha256}</strong>
-                            <span>{fact.evidenceId} · {fact.module} · {fact.artifactType}: {fact.artifactReference}</span>
-                            <span>Observed value: {fact.value}</span>
-                            <small>Integrity: {fact.integrityStatus}; custody: {fact.custodyStatus}; human validation: {fact.validationStatus}</small>
-                          </article>
-                        ))}
-                      </section>
-                      {[
-                        ['AI Interpretation', response.interpretations],
-                        ['Investigative Leads', response.investigativeLeads],
-                        ['Recommendations', response.recommendations],
-                      ].map(([heading, claims]) => (
-                        <section key={heading}>
-                          <h4>{heading}</h4>
-                          {claims.length ? claims.map((claim, index) => (
-                            <article className="copilot-claim" key={`${heading}-${index}`}>
-                              <p>{claim.text}</p>
-                              <small>Evidence references: {claim.evidenceRefs.join(', ')}</small>
-                            </article>
-                          )) : <p className="copilot-empty">No supported items returned.</p>}
-                        </section>
-                      ))}
-                      {response.unsupportedClaims.length > 0 && (
-                        <details className="copilot-unsupported">
-                          <summary>Excluded unsupported claims ({response.unsupportedClaims.length})</summary>
-                          <ul>{response.unsupportedClaims.map((claim, index) => <li key={index}>{claim.text} — {claim.reason}</li>)}</ul>
-                        </details>
-                      )}
-                      {response === copilotResponse && (
-                        <button type="button" className="button button-dark" onClick={saveCurrentCopilotFinding} disabled={copilotBusy}>Save as NEEDS REVIEW</button>
-                      )}
-                    </div>
-                  </article>
-                ))}
-                {copilotBusy && <p className="copilot-thinking" role="status">Verifying approved context or waiting for the secure AI service…</p>}
-                {copilotError && <p className="copilot-error" role="alert">{copilotError}</p>}
-              </div>
-
-              <details className="copilot-context" open={!copilotFacts.length}>
-                <summary>Evidence &amp; approved facts {copilotFacts.length ? `· ${copilotFacts.length} prepared` : ''}</summary>
-                {!caseId ? (
-                  <p className="copilot-empty">Open a case to select evidence and ask an investigation question.</p>
-                ) : (
-                  <>
-              <fieldset className="copilot-evidence-select" disabled={copilotBusy}>
-                <legend>Evidence and saved analysis results — {caseId}</legend>
-                {!activeRecords.length ? <p>No active evidence records are saved in this local case.</p> : activeRecords.map((record) => (
-                  <label key={record.id} className="copilot-evidence-option">
-                    <input
-                      type="checkbox"
-                      checked={copilotSelectedIds.includes(record.id)}
-                      onChange={(event) => {
-                        setCopilotSelectedIds((ids) => event.target.checked
-                          ? [...ids, record.id].slice(0, 10)
-                          : ids.filter((id) => id !== record.id));
-                        setCopilotFacts([]);
-                        setCopilotApprovedFactIds([]);
-                        setCopilotApproved(false);
-                        setCopilotResponse(null);
-                      }}
-                    />
-                    <span><strong>{record.name}</strong><small>{record.id} · SHA-256 {record.sha256.slice(0, 16)}…</small></span>
-                    <small>{[
-                      record.exif && 'EXIF',
-                      record.registryAnalysis && 'Registry',
-                      record.pcapAnalysis && 'PCAP',
-                      record.sqliteAnalysis && 'SQLite',
-                    ].filter(Boolean).join(' · ') || 'Evidence inventory only'}</small>
-                  </label>
-                ))}
-              </fieldset>
-              <button type="button" className="button button-dark" onClick={prepareCopilotContext} disabled={copilotBusy || !copilotSelectedIds.length}>
-                {copilotBusy ? 'Verifying evidence…' : 'Verify and preview facts'}
-              </button>
-
-              {copilotFacts.length > 0 && (
-                <div className="copilot-preview">
-                  <h3>Structured facts to be sent ({copilotFacts.length})</h3>
-                  <p>Original evidence files, encrypted bytes, passphrases, and encryption keys are never sent. Review this preview before approving.</p>
-                  <ul className="copilot-fact-list">
-                    {copilotFacts.map((fact) => (
-                      <li key={fact.referenceId}>
-                        <label className="copilot-fact-choice">
-                          <input
-                            type="checkbox"
-                            checked={copilotApprovedFactIds.includes(fact.referenceId)}
-                            onChange={(event) => {
-                              setCopilotApprovedFactIds((ids) => event.target.checked
-                                ? [...ids, fact.referenceId]
-                                : ids.filter((id) => id !== fact.referenceId));
-                              setCopilotApproved(false);
-                              setCopilotResponse(null);
-                            }}
-                          />
-                          <span>
-                            <strong>{fact.referenceId} · {fact.module} / {fact.artifactType}</strong>
-                            <code>{fact.filename} · {fact.evidenceId} · SHA-256 {fact.sha256} · {fact.artifactReference}</code>
-                            <span>{fact.value}</span>
-                            <small>{fact.integrityStatus}; {fact.custodyStatus}; validation: {fact.validationStatus}</small>
-                          </span>
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="copilot-request-size" role="status" aria-live="polite">
-                    {copilotSelectedFacts.length
-                      ? copilotQuestion.trim()
-                        ? `${copilotSelectedFacts.length} selected facts will be sent in ${copilotRequestBatches.length} request${copilotRequestBatches.length === 1 ? '' : 's'}: ${copilotRequestBatches.map((batch) => `${getCopilotRequestSize(copilotQuestion, batch, caseId).toLocaleString()} bytes`).join(', ')} (maximum ${MAX_COPILOT_REQUEST_BYTES.toLocaleString()} bytes each).`
-                        : `${copilotSelectedFacts.length} facts selected. Enter a question to calculate request sizes.`
-                      : 'No facts selected. Choose the facts relevant to your question.'}
-                    {' '}Every selected fact is sent; deselected facts remain in the original local analysis and can be selected later.
-                  </p>
-                  <label className="copilot-approval">
-                    <input type="checkbox" checked={copilotApproved} disabled={!copilotApprovedFactIds.length} onChange={(event) => setCopilotApproved(event.target.checked)} />
-                    I reviewed the checked facts and approve sending only those selected facts to the secure AI service in the request batches shown above.
-                  </label>
-                </div>
-              )}
-            </>
-          )}
-              </details>
-
-              <form
-                className="copilot-question-form copilot-chat-composer"
-                onSubmit={askCopilot}
-                aria-label="Ask the AI Copilot"
-              >
-                <label htmlFor="copilot-question">Investigation question</label>
-                <textarea
-                  ref={copilotQuestionRef}
-                  id="copilot-question"
-                  rows="2"
-                  maxLength="2000"
-                  value={copilotQuestion}
-                  onChange={(event) => setCopilotQuestion(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  aria-describedby="copilot-composer-help"
-                  placeholder="Ask about the verified and approved facts…"
-                  required
-                />
-                <div className="copilot-composer-actions">
-                  <small id="copilot-composer-help">
-                    {!copilotFacts.length
-                      ? 'Verify evidence facts and approve them before sending. Ctrl/⌘ + Enter sends.'
-                      : !copilotApproved
-                        ? 'Review and approve the selected structured facts before sending.'
-                        : !authSession?.access_token
-                          ? 'Team sign-in and case membership are required to send a request.'
-                          : !teamCaseRegistered
-                            ? 'Register the open local case for team access before sending.'
-                          : 'Only investigator-approved structured facts are sent. Ctrl/⌘ + Enter sends.'}
-                  </small>
+            {!copilotPanelMinimized && (
+              <>
+                <nav className="copilot-minitab-nav" role="tablist" aria-label="Copilot minitab sections">
                   <button
-                    type="submit"
-                    className="button button-accent"
-                    disabled={copilotBusy || !caseId || !copilotApproved || !copilotApprovedFactIds.length || !copilotConfigured || !authSession?.access_token || !teamCaseRegistered}
+                    type="button"
+                    role="tab"
+                    aria-selected={copilotMiniTab === 'chat'}
+                    className={`copilot-minitab-btn ${copilotMiniTab === 'chat' ? 'copilot-minitab-btn-active' : ''}`}
+                    onClick={() => setCopilotMiniTab('chat')}
                   >
-                    {copilotBusy ? 'Sending…' : 'Send'}
+                    Chat {copilotConversation.length > 0 ? `(${copilotConversation.length})` : ''}
                   </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={copilotMiniTab === 'toolkit'}
+                    className={`copilot-minitab-btn ${copilotMiniTab === 'toolkit' ? 'copilot-minitab-btn-active' : ''}`}
+                    onClick={() => setCopilotMiniTab('toolkit')}
+                  >
+                    Toolkit &amp; Facts {copilotFacts.length > 0 ? `(${copilotFacts.length})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={copilotMiniTab === 'verify'}
+                    className={`copilot-minitab-btn ${copilotMiniTab === 'verify' ? 'copilot-minitab-btn-active' : ''}`}
+                    onClick={() => setCopilotMiniTab('verify')}
+                  >
+                    Verify &amp; Log {savedCopilotFindings.length > 0 ? `(${savedCopilotFindings.length})` : ''}
+                  </button>
+                </nav>
+                <div className="copilot-chat-body">
+                  {copilotMiniTab === 'chat' && renderCopilotChatTab({ isMini: true, onSwitchTab: setCopilotMiniTab })}
+                  {copilotMiniTab === 'toolkit' && renderCopilotToolkitTab({ onSwitchTab: setCopilotMiniTab })}
+                  {copilotMiniTab === 'verify' && renderCopilotVerifyTab()}
                 </div>
-              </form>
-
-          {savedCopilotFindings.length > 0 && (
-            <div className="copilot-saved-findings">
-              <div className="copilot-result-heading">
-                <h3>Saved Copilot findings ({savedCopilotFindings.length})</h3>
-                <button type="button" className="text-button" onClick={downloadCopilotFindings}>Download findings and validation report</button>
-              </div>
-              {savedCopilotFindings.map(({ evidenceRecord, ...finding }) => {
-                const review = copilotReviews[finding.id] || {};
-                return (
-                  <article className="copilot-saved-finding" key={finding.id}>
-                    <div className="copilot-result-heading"><strong>{finding.question}</strong><span>{finding.validationStatus}</span></div>
-                    <p>Saved with {finding.observedEvidence.length} structured evidence facts. AI suggestions remain unverified until an authorized investigator records an independent review.</p>
-                    <form className="copilot-review-form" onSubmit={(event) => { event.preventDefault(); reviewCopilotFinding(evidenceRecord, finding); }}>
-                      <label>Status
-                        <select value={review.status || 'NEEDS REVIEW'} onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], status: event.target.value } }))}>
-                          <option>VERIFIED</option><option>MISMATCH</option><option>NEEDS REVIEW</option>
-                        </select>
-                      </label>
-                      <label>Analyst notes
-                        <textarea required rows="2" value={review.notes || ''} onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], notes: event.target.value } }))} />
-                      </label>
-                      <label>Independent verification tool or method
-                        <input required value={review.independentMethod || ''} onChange={(event) => setCopilotReviews((all) => ({ ...all, [finding.id]: { ...all[finding.id], independentMethod: event.target.value } }))} />
-                      </label>
-                      <button type="submit" className="button button-dark" disabled={copilotBusy || !authSession?.access_token}>Record investigator validation</button>
-                    </form>
-                    {finding.validationHistory?.map((entry, index) => (
-                      <p className="copilot-validation-history" key={`${finding.id}-${index}`}>
-                        {entry.status} by {entry.analyst} ({entry.investigatorId}) on {formatDate(entry.reviewedAt)} · {entry.independentMethod}
-                      </p>
-                    ))}
-                  </article>
-                );
-              })}
-            </div>
-          )}
-            </div>}
+              </>
+            )}
           </section>,
           appRootRef.current,
         )}
@@ -2074,12 +3044,211 @@ function App() {
                 <button type="button" className="text-button" onClick={() => setTimelineFilters({ evidenceId: '', module: '', startDate: '', endDate: '', validationStatus: '', timestampStatus: '' })}>Clear filters</button>
               </div>
               <div className="timeline-actions">
-                <span>{filteredTimelineEvents.length} of {timelineEvents.length} events · {timelineCaseId}</span>
+                <div className="timeline-view-tabs" role="tablist" aria-label="Timeline view mode">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={timelineViewMode === 'standard'}
+                    className={`button ${timelineViewMode === 'standard' ? 'button-accent' : 'button-dark'}`}
+                    onClick={() => setTimelineViewMode('standard')}
+                  >
+                    Standard Timeline ({filteredTimelineEvents.length})
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={timelineViewMode === 'ai'}
+                    className={`button ${timelineViewMode === 'ai' ? 'button-accent' : 'button-dark'}`}
+                    onClick={() => setTimelineViewMode('ai')}
+                  >
+                    AI-Analyzed Timeline
+                  </button>
+                </div>
                 <div>
+                  <button
+                    type="button"
+                    className="button button-accent"
+                    onClick={() => {
+                      setTimelineViewMode('ai');
+                      generateAiTimelineAnalysis();
+                    }}
+                    disabled={aiTimelineBusy || !copilotAccessReady || !timelineRecords.length}
+                  >
+                    {aiTimelineBusy ? 'Analyzing timeline…' : 'Generate AI Timeline Analysis'}
+                  </button>
                   <button type="button" className="button button-dark" onClick={() => downloadTimeline('json')} disabled={!filteredTimelineEvents.length}>Export timeline JSON</button>
                   <button type="button" className="button button-dark" onClick={() => downloadTimeline('csv')} disabled={!filteredTimelineEvents.length}>Export timeline CSV</button>
                 </div>
               </div>
+              {timelineViewMode === 'ai' ? (
+                <div className="ai-timeline-panel" aria-label="AI-analyzed timeline">
+                  {aiTimelineError && <p className="timeline-error" role="alert">{aiTimelineError}</p>}
+                  {!aiTimelineAnalysis || aiTimelineAnalysis.caseId !== timelineCaseId ? (
+                    <div className="ai-timeline-empty">
+                      <h3>AI-Analyzed Timeline View</h3>
+                      <p>Generate an AI-analyzed chronological view across all logs, custody records, metadata, and toolkit outputs for {timelineCaseId}. All AI timeline findings are documented in the case vault and require custodian/investigator verification.</p>
+                      <button
+                        type="button"
+                        className="button button-accent"
+                        onClick={generateAiTimelineAnalysis}
+                        disabled={aiTimelineBusy || !copilotAccessReady || !timelineRecords.length}
+                      >
+                        {aiTimelineBusy ? 'Generating AI timeline analysis…' : 'Generate AI-Analyzed Timeline'}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="ai-timeline-banner">
+                        <div>
+                          <p className="eyebrow">AI-ANALYZED TIMELINE · {aiTimelineAnalysis.caseId}</p>
+                          <h3>Generated {formatDate(aiTimelineAnalysis.generatedAt)} from {aiTimelineAnalysis.sourceEventCount} timeline events &amp; {aiTimelineAnalysis.facts.length} verified facts</h3>
+                        </div>
+                        <div className="ai-timeline-banner-actions">
+                          <span className={`validation-status validation-${(aiTimelineSavedFinding?.status || 'NEEDS REVIEW').toLowerCase().replaceAll(' ', '-')}`}>
+                            {aiTimelineSavedFinding?.status || 'NEEDS REVIEW'}
+                          </span>
+                          <button type="button" className="button button-dark" onClick={downloadAiTimelineReport}>
+                            Export AI Timeline Report (JSON)
+                          </button>
+                        </div>
+                      </div>
+
+                      {aiTimelineAnalysis.response.summary && (
+                        <p className="copilot-executive-summary">{aiTimelineAnalysis.response.summary}</p>
+                      )}
+
+                      {aiTimelineAnalysis.response.analyzedTimeline?.length > 0 && (
+                        <div className="timeline-event-list">
+                          <h3>AI-Correlated Chronological Events ({aiTimelineAnalysis.response.analyzedTimeline.length})</h3>
+                          {aiTimelineAnalysis.response.analyzedTimeline.map((item, idx) => (
+                            <article className="timeline-event ai-timeline-event" key={`ai-tl-${idx}`}>
+                              <div className="ai-timeline-event-time">
+                                <strong>{item.timestamp}</strong>
+                                <span className={`ai-sig-badge ai-sig-${item.significance.toLowerCase()}`}>{item.significance} PRIORITY</span>
+                              </div>
+                              <div>
+                                <strong>{item.eventSummary}</strong>
+                                <span>{item.analysis}</span>
+                                <code>Citations: {item.evidenceRefs.join(', ')}</code>
+                              </div>
+                              <span className="timeline-status">{aiTimelineSavedFinding?.status || 'NEEDS REVIEW'}</span>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="ai-timeline-grid">
+                        {[
+                          ['Objective Conclusions', aiTimelineAnalysis.response.objectiveConclusions || []],
+                          ['Cross-Artifact Connections', aiTimelineAnalysis.response.connections || []],
+                          ['Gaps & Timestamp Anomalies', aiTimelineAnalysis.response.gapsAndAnomalies || []],
+                          ['Viable Next Steps', aiTimelineAnalysis.response.recommendations || []],
+                        ].map(([heading, items]) => (
+                          <section className="ai-timeline-card" key={heading}>
+                            <h4>{heading}</h4>
+                            {items.length ? items.map((claim, idx) => (
+                              <article className="copilot-claim" key={`${heading}-${idx}`}>
+                                <p>{claim.text}</p>
+                                <small>Evidence references: {claim.evidenceRefs.join(', ')}</small>
+                              </article>
+                            )) : <p className="copilot-empty">No items identified.</p>}
+                          </section>
+                        ))}
+                      </div>
+
+                      {aiTimelineAnalysis.response.workflow?.length > 0 && (
+                        <section className="ai-timeline-card">
+                          <h4>Recommended Verification &amp; Investigation Workflow</h4>
+                          <ol className="copilot-workflow-list">
+                            {aiTimelineAnalysis.response.workflow.map((step) => (
+                              <li className="copilot-workflow-step" key={`tl-wf-${step.step}`}>
+                                <div className="copilot-workflow-head">
+                                  <strong>Step {step.step}: {step.title}</strong>
+                                  <button type="button" className="copilot-module-jump" onClick={() => jumpToWorkflowModule(step.module)}>
+                                    {step.module} →
+                                  </button>
+                                </div>
+                                <p>{step.action}</p>
+                                <small>Evidence references: {step.evidenceRefs.join(', ')}</small>
+                              </li>
+                            ))}
+                          </ol>
+                        </section>
+                      )}
+
+                      <section className="ai-timeline-verify-card" aria-label="Custodian and investigator timeline verification">
+                        <div className="copilot-result-heading">
+                          <h4>Custodian / Investigator Verification Gate</h4>
+                          <span>{aiTimelineSavedFinding?.status || 'NEEDS REVIEW'}</span>
+                        </div>
+                        <p>Review the AI-analyzed timeline against the raw Standard Timeline and source evidence. Record your sign-off below to verify and log a cryptographic Chain of Custody event.</p>
+                        <form className="copilot-review-form" onSubmit={verifyAiTimelineAnalysis}>
+                          <label>Custodian / Investigator Name
+                            <input
+                              required
+                              value={aiTimelineReview.analyst}
+                              placeholder="Enter custodian or investigator name"
+                              onChange={(event) => setAiTimelineReview((curr) => ({ ...curr, analyst: event.target.value }))}
+                            />
+                          </label>
+                          <label>Verification Status
+                            <select
+                              value={aiTimelineReview.status}
+                              onChange={(event) => setAiTimelineReview((curr) => ({ ...curr, status: event.target.value }))}
+                            >
+                              <option>VERIFIED</option>
+                              <option>MISMATCH</option>
+                              <option>NEEDS REVIEW</option>
+                            </select>
+                          </label>
+                          <label>Independent Verification Method / Tool
+                            <input
+                              required
+                              value={aiTimelineReview.independentMethod}
+                              placeholder="e.g. Cross-checked UTC timestamps, custody hashes, and raw artifacts"
+                              onChange={(event) => setAiTimelineReview((curr) => ({ ...curr, independentMethod: event.target.value }))}
+                            />
+                          </label>
+                          <label>Verification Notes
+                            <textarea
+                              required
+                              rows="2"
+                              value={aiTimelineReview.notes}
+                              placeholder="Record confirmation, corrections, or timestamp caveats"
+                              onChange={(event) => setAiTimelineReview((curr) => ({ ...curr, notes: event.target.value }))}
+                            />
+                          </label>
+                          <label className="copilot-approval">
+                            <input
+                              type="checkbox"
+                              checked={aiTimelineReview.attested}
+                              onChange={(event) => setAiTimelineReview((curr) => ({ ...curr, attested: event.target.checked }))}
+                            />
+                            I attest as custodian/investigator that I independently verified this AI-analyzed timeline against the case records and logs.
+                          </label>
+                          <button
+                            type="submit"
+                            className="button button-accent"
+                            disabled={copilotBusy || !aiTimelineReview.attested || !aiTimelineReview.analyst.trim()}
+                          >
+                            Record Custodian / Investigator Verification
+                          </button>
+                        </form>
+                        {aiTimelineSavedFinding?.validationHistory?.length > 0 && (
+                          <div className="ai-timeline-history">
+                            {aiTimelineSavedFinding.validationHistory.map((entry, idx) => (
+                              <p className="copilot-validation-history" key={`tl-val-${idx}`}>
+                                {entry.status} by {entry.analyst} ({entry.investigatorId}) on {formatDate(entry.reviewedAt)} · {entry.independentMethod} — {entry.notes}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <>
               {filteredTimelineEvents.filter((event) => event.timestamp).length > 0 ? (
                 <div className="timeline-event-list">
                   <h3>Chronological events (UTC)</h3>
@@ -2117,6 +3286,8 @@ function App() {
                     </article>
                   ))}
                 </div>
+              )}
+                </>
               )}
             </>
           )}
@@ -2254,17 +3425,17 @@ function App() {
                     <span>Archived {formatDate(selectedRecord.archivedAt)} by {selectedRecord.archive?.analyst || 'unknown analyst'}.</span>
                   </div>
                 )}
-                <div className="detail-heading" hidden={analysisWorkspace}>
+                <div className="detail-heading" hidden={analysisWorkspace && activeWorkspace !== 'exif'}>
                   <div className="detail-title-wrap"><span className="detail-file-icon"><Icon name="file" size={19} /></span><div><p className="eyebrow">EVIDENCE RECORD</p><h2 title={selectedRecord.name}>{selectedRecord.name}</h2></div></div>
                   <button type="button" className="icon-button download-button" onClick={handleDownload} aria-label="Decrypt and download evidence" title="Decrypt and download"><Icon name="download" size={18} /></button>
                 </div>
 
-                <div className="integrity-banner" hidden={analysisWorkspace}>
+                <div className="integrity-banner" hidden={analysisWorkspace && activeWorkspace !== 'exif'}>
                   <span className="integrity-icon"><Icon name={custodyChainValid ? 'shield' : 'close'} size={16} /></span>
                   <span><strong>{custodyChainValid ? 'Custody chain verified' : 'Custody chain check failed'}</strong><small>{custodyChainValid ? 'Event links match the stored record' : 'One or more event links do not match'}</small></span>
                 </div>
 
-                <div className="metadata-section" hidden={analysisWorkspace}>
+                <div className="metadata-section" hidden={analysisWorkspace && activeWorkspace !== 'exif'}>
                   <div className="detail-section-title"><h3>File metadata</h3><span>EXTRACTED</span></div>
                   <dl className="metadata-list">
                     <div><dt>File type</dt><dd>{selectedRecord.type || 'Unknown'}</dd></div>
@@ -2656,7 +3827,7 @@ function App() {
                   )}
                 </section>
 
-                <div className="custody-section" hidden={analysisWorkspace}>
+                <div className="custody-section" hidden={analysisWorkspace && activeWorkspace !== 'exif'}>
                   <div className="detail-section-title"><h3>Chain of custody</h3><span>{selectedRecord.custody.length} EVENTS</span></div>
                   <ol className="custody-list">
                     {selectedRecord.custody.slice().reverse().map((entry) => (

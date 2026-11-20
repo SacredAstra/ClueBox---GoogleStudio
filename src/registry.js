@@ -4,6 +4,7 @@ const MAX_SUBKEY_INDEX_DEPTH = 64;
 const MAX_KEYS = 100_000;
 const MAX_VALUES_PER_KEY = 10_000;
 const MAX_VALUE_BYTES = 16 * 1024 * 1024;
+const BIG_DATA_THRESHOLD = 16344; // 0x3FD8 bytes
 const MAX_ARTIFACTS = 2_000;
 const HCELL_VOLATILE = 0x80000000;
 const HCELL_NIL = 0xffffffff;
@@ -279,26 +280,103 @@ class RegistryHive {
         : this.utf16(cell.start + 0x14, nameLength, relativeOffset))
       : '(Default)';
     if (dataLength > MAX_VALUE_BYTES) throw new Error(`Registry value "${valueName}" exceeds the parser size limit.`);
-    let bytes;
-    if (encodedLength & 0x80000000) {
-      if (dataLength > 4) throw new Error(`Registry value "${valueName}" has an invalid inline data length.`);
-      bytes = new Uint8Array(4);
-      new DataView(bytes.buffer).setUint32(0, dataOffset, true);
-      bytes = bytes.subarray(0, dataLength);
-    } else if (dataLength === 0) {
-      bytes = new Uint8Array();
-    } else {
-      const dataCell = this.cell(dataOffset);
-      if (dataCell.start + dataLength > dataCell.end) {
-        throw new Error(
-          `Registry value "${valueName}" at data cell offset 0x${dataOffset.toString(16)} `
-          + `requests ${dataLength} bytes; available bounds are [0x${dataCell.start.toString(16)}, `
-          + `0x${dataCell.end.toString(16)}).`,
-        );
-      }
-      bytes = this.bytes.slice(dataCell.start, dataCell.start + dataLength);
-    }
+    const bytes = this.readValueData(dataOffset, encodedLength, valueName);
     return { name: valueName, type, data: this.decodeValue(type, bytes) };
+  }
+
+  readValueData(dataOffset, rawDataSize, valueName) {
+    // High bit (0x80000000) indicates data is stored inline inside dataOffset itself
+    const isResident = (rawDataSize & 0x80000000) !== 0;
+    const actualSize = rawDataSize & 0x7fffffff;
+
+    if (actualSize === 0) {
+      return new Uint8Array();
+    }
+
+    if (isResident) {
+      if (actualSize > 4) throw new Error(`Registry value "${valueName}" has an invalid inline data length.`);
+      const inlineBytes = new Uint8Array(4);
+      new DataView(inlineBytes.buffer).setUint32(0, dataOffset, true);
+      return inlineBytes.subarray(0, Math.min(actualSize, 4));
+    }
+
+    // Standard single-cell data
+    if (actualSize <= BIG_DATA_THRESHOLD) {
+      return this.readCellPayload(dataOffset, actualSize, valueName);
+    }
+
+    // Big Data ("db") handling for values > 16,344 bytes
+    return this.readBigData(dataOffset, actualSize, valueName);
+  }
+
+  readBigData(dbCellRelOffset, totalExpectedSize, valueName) {
+    const dbCell = this.cell(
+      dbCellRelOffset,
+      `Unallocated or invalid db cell at offset: 0x${dbCellRelOffset.toString(16)}`,
+    );
+
+    // Verify 'db' ASCII signature at payload offset +0x00 (cell offset +0x04)
+    if (dbCell.end - dbCell.start < 2 || this.ascii(dbCell.start, 2, 'big-data signature', dbCellRelOffset) !== 'db') {
+      // Fallback if a non-standard large single cell is encountered
+      return this.readCellPayload(dbCellRelOffset, totalExpectedSize, valueName);
+    }
+
+    if (dbCell.start + 8 > dbCell.end) {
+      throw new Error(`Registry value "${valueName}" has a truncated db cell at offset 0x${dbCellRelOffset.toString(16)}.`);
+    }
+
+    const segmentCount = this.u16(dbCell.start + 2, 'big-data segment count', dbCellRelOffset);
+    const blocklistRelOffset = this.u32(dbCell.start + 4, 'big-data blocklist offset', dbCellRelOffset);
+
+    // Navigate to the blocklist cell containing the array of chunk offsets
+    const blocklistCell = this.cell(
+      blocklistRelOffset,
+      `Unallocated or invalid blocklist cell at: 0x${blocklistRelOffset.toString(16)}`,
+    );
+    if (blocklistCell.start + segmentCount * 4 > blocklistCell.end) {
+      throw new Error(
+        `Registry value "${valueName}" big-data blocklist at offset 0x${blocklistRelOffset.toString(16)} `
+        + `is truncated for ${segmentCount} segments.`,
+      );
+    }
+
+    const output = new Uint8Array(totalExpectedSize);
+    let writeOffset = 0;
+    let bytesRemaining = totalExpectedSize;
+
+    for (let index = 0; index < segmentCount && bytesRemaining > 0; index += 1) {
+      // Each entry in the blocklist payload is a 4-byte relative offset
+      const chunkRelOffset = this.u32(
+        blocklistCell.start + index * 4,
+        'big-data chunk offset',
+        blocklistRelOffset,
+      );
+      const chunkCell = this.cell(
+        chunkRelOffset,
+        `Unallocated or invalid big-data chunk cell at: 0x${chunkRelOffset.toString(16)}`,
+      );
+      // Available payload in chunk is cell size minus 4-byte size header (max 16344 bytes)
+      const maxChunkPayload = Math.min(chunkCell.end - chunkCell.start, BIG_DATA_THRESHOLD);
+      const bytesToRead = Math.min(bytesRemaining, maxChunkPayload);
+
+      output.set(this.bytes.subarray(chunkCell.start, chunkCell.start + bytesToRead), writeOffset);
+      writeOffset += bytesToRead;
+      bytesRemaining -= bytesToRead;
+    }
+
+    return writeOffset === totalExpectedSize ? output : output.subarray(0, writeOffset);
+  }
+
+  readCellPayload(relOffset, length, valueName) {
+    const dataCell = this.cell(relOffset);
+    if (dataCell.start + length > dataCell.end) {
+      throw new Error(
+        `Registry value "${valueName}" at data cell offset 0x${relOffset.toString(16)} `
+        + `requests ${length} bytes; available bounds are [0x${dataCell.start.toString(16)}, `
+        + `0x${dataCell.end.toString(16)}).`,
+      );
+    }
+    return this.bytes.slice(dataCell.start, dataCell.start + length);
   }
 
   decodeValue(type, bytes) {

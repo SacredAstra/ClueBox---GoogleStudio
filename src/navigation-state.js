@@ -10,6 +10,7 @@ const VALID_WORKSPACES = new Set([
   'sqlite',
   'timeline',
   'reports',
+  'copilot',
 ]);
 
 const DEFAULT_STATE = {
