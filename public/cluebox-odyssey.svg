@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="cb-box" x1="16" y1="14" x2="104" y2="106" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="55%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#8b5cf6" />
+    </linearGradient>
+    <linearGradient id="cb-fill" x1="20" y1="16" x2="100" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#11223d" />
+      <stop offset="100%" stop-color="#0b1020" />
+    </linearGradient>
+  </defs>
+  <polygon points="60,10 104,35 104,85 60,110 16,85 16,35" fill="url(#cb-fill)" stroke="url(#cb-box)" stroke-width="4" stroke-linejoin="round" />
+  <polyline points="16,35 60,60 104,35" stroke="url(#cb-box)" stroke-width="3" stroke-linejoin="round" opacity="0.7" />
+  <line x1="60" y1="60" x2="60" y2="110" stroke="url(#cb-box)" stroke-width="3" opacity="0.55" />
+  <path d="M44 54 C44 43 51 36 60 36 C69 36 76 43 76 54 C76 66 71 76 60 84" stroke="#67e8f9" stroke-width="3" stroke-linecap="round" />
+  <path d="M50 56 C50 48 54.5 43 60 43 C65.5 43 70 48 70 56 C70 64 66 71 58 76" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" />
+  <path d="M56 58 C56 53 57.8 50 60 50 C62.2 50 64 53 64 58 C64 63 61 67 56 70" stroke="#a78bfa" stroke-width="3" stroke-linecap="round" />
+  <circle cx="60" cy="24" r="3" fill="#67e8f9" />
+</svg>

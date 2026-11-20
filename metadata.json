@@ -1,0 +1,6 @@
+{
+  "name": "ClueBox Odyssey",
+  "description": "ClueBox Odyssey — Explore the Digital Unknown. A private forensic workspace for evidence integrity, analysis, and investigation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
