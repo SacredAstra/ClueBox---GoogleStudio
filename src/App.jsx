@@ -197,6 +197,7 @@ function App() {
   const [autoDocumentCopilot, setAutoDocumentCopilot] = useState(true);
   const [copilotMiniTab, setCopilotMiniTab] = useState('chat');
   const [copilotWorkspaceTab, setCopilotWorkspaceTab] = useState('chat');
+  const [odysseyWorkSection, setOdysseyWorkSection] = useState({});
   const [timelineCaseId, setTimelineCaseId] = useState('');
   const [timelineRecords, setTimelineRecords] = useState([]);
   const [timelineIntegrity, setTimelineIntegrity] = useState({});
@@ -493,14 +494,14 @@ function App() {
         if (active) {
           setCopilotConfigured(status.available === true);
           setCopilotAvailability(status.available
-            ? (status.message || 'AI Forensic Copilot ready — full toolkit observatory active.')
+            ? (status.message || 'Odyssey ready — full toolkit observatory active.')
             : (status.message || COPILOT_UNAVAILABLE_MESSAGE));
         }
       })
       .catch((availabilityError) => {
         if (active) {
           setCopilotConfigured(false);
-          setCopilotAvailability(availabilityError.message || 'AI Copilot unavailable — secure backend not reachable.');
+          setCopilotAvailability(availabilityError.message || 'Odyssey unavailable — secure backend not reachable.');
         }
       });
     return () => { active = false; };
@@ -565,7 +566,8 @@ function App() {
     sqlite: ['SQLite Analysis', 'Review database schemas, records, and timestamp candidates.'],
     timeline: ['Investigation Timeline', 'Correlate source events while preserving timestamp certainty.'],
     reports: ['Investigation Reports', 'Prepare and export a case report without modifying evidence.'],
-    copilot: ['AI Forensic Copilot', 'Full-toolkit observatory, evidence fact & explanation scanner, workflow planner, and custodian verification.'],
+    copilot: ['Odyssey', 'Full-toolkit forensic observatory, evidence fact & explanation scanner, workflow planner, and custodian verification.'],
+    creators: ['Co-Creators', 'Meet the co-creators behind the ClueBox Odyssey toolkit.'],
   };
   const analysisWorkspace = ['exif', 'registry', 'pcap', 'sqlite'].includes(activeWorkspace);
   const evidenceWorkspaceVisible = ['evidence', ...['exif', 'registry', 'pcap', 'sqlite']].includes(activeWorkspace);
@@ -579,7 +581,7 @@ function App() {
     ['sqlite', 'SQLite Analysis', 'database'],
     ['timeline', 'Timeline', 'activity'],
     ['reports', 'Reports', 'fileText'],
-    ['copilot', 'AI Copilot', 'sparkles'],
+    ['copilot', 'Odyssey', 'sparkles'],
   ];
   const moduleCards = [
     { id: 'cases', title: 'Case Management', description: 'Edit case details, review status, and register for team access.', icon: 'folderSearch' },
@@ -590,7 +592,7 @@ function App() {
     { id: 'sqlite', title: 'SQLite Analysis', description: 'Review database schemas, records, and timestamp candidates.', icon: 'database' },
     { id: 'timeline', title: 'Timeline', description: 'Correlate case events while preserving timestamp certainty.', icon: 'activity' },
     { id: 'reports', title: 'Reports', description: 'Prepare and export a reviewable investigation report.', icon: 'fileText' },
-    { id: 'copilot', title: 'AI Copilot', description: 'Ask evidence-grounded questions with approved, cited facts.', icon: 'sparkles' },
+    { id: 'copilot', title: 'Odyssey', description: 'Ask evidence-grounded questions with approved, cited facts.', icon: 'sparkles' },
   ];
 
   useEffect(() => {
@@ -2029,12 +2031,12 @@ function App() {
         </div>
       </div>
 
-      <div className="copilot-chat-conversation" ref={isMini ? copilotConversationRef : undefined} aria-label="Copilot conversation">
+      <div className="copilot-chat-conversation" ref={isMini ? copilotConversationRef : undefined} aria-label="Odyssey conversation">
         {!copilotConversation.length && (
           <div className="copilot-welcome">
-            <span className="copilot-welcome-mark" aria-hidden="true">AI</span>
-            <h3>Full-Toolkit Forensic Observatory</h3>
-            <p>Use <strong>Toolkit &amp; Facts</strong> to scan evidence for extracted facts and plain-English explanations, then ask Copilot for objective conclusions, cross-artifact connections, viable next steps, and structured workflows.</p>
+            <span className="copilot-welcome-mark" aria-hidden="true">O</span>
+            <h3>Odyssey — Full-Toolkit Forensic Observatory</h3>
+            <p>Use <strong>Toolkit &amp; Facts</strong> to scan evidence for extracted facts and plain-English explanations, then ask Odyssey for clear, organized answers followed by its complete supporting forensic work.</p>
             {caseId && activeRecords.length > 0 && !copilotFacts.length && (
               <div className="copilot-welcome-actions">
                 <button
@@ -2052,112 +2054,273 @@ function App() {
             )}
           </div>
         )}
-        {copilotConversation.map(({ id, question, response }) => (
-          <article className="copilot-chat-turn" key={id}>
-            <div className="copilot-user-message"><span>You</span><p>{question}</p></div>
-            <div className="copilot-assistant-message">
-              <div className="copilot-result-heading"><h3>Copilot Forensic Analysis</h3><span>NEEDS CUSTODIAN VERIFICATION</span></div>
-              {response.summary && (
-                <p className="copilot-executive-summary">{response.summary}</p>
-              )}
-              {(response.insufficientEvidence || response.unsupportedClaims.length > 0) && (
-                <p className="copilot-insufficient"><strong>INSUFFICIENT EVIDENCE — NEEDS REVIEW</strong> Unsupported or uncited AI claims are excluded below.</p>
-              )}
-              {[
-                ['Objective Conclusions', response.objectiveConclusions || []],
-                ['Analytic Statements & Interpretations', response.interpretations || []],
-                ['Cross-Artifact & Log Connections', response.connections || []],
-                ['Investigative Leads', response.investigativeLeads || []],
-                ['Viable Next Steps & Recommendations', response.recommendations || []],
-                ['Gaps, Anomalies & Limitations', response.gapsAndAnomalies || []],
-              ].map(([heading, claims]) => (
-                <section key={heading}>
-                  <h4>{heading}</h4>
-                  {claims.length ? claims.map((claim, index) => (
-                    <article className="copilot-claim" key={`${heading}-${index}`}>
-                      <p>{claim.text}</p>
-                      <small>Evidence references: {claim.evidenceRefs.join(', ')}</small>
-                    </article>
-                  )) : <p className="copilot-empty">No supported items returned.</p>}
-                </section>
-              ))}
-              {(response.workflow?.length > 0) && (
-                <section>
-                  <h4>Recommended Investigation Workflow</h4>
-                  <ol className="copilot-workflow-list">
-                    {response.workflow.map((step) => (
-                      <li className="copilot-workflow-step" key={`${step.step}-${step.title}`}>
-                        <div className="copilot-workflow-head">
-                          <strong>Step {step.step}: {step.title}</strong>
-                          <button
-                            type="button"
-                            className="copilot-module-jump"
-                            onClick={() => jumpToWorkflowModule(step.module)}
-                          >
-                            {step.module} →
-                          </button>
-                        </div>
-                        <p>{step.action}</p>
-                        <small>Evidence references: {step.evidenceRefs.join(', ')}</small>
-                      </li>
-                    ))}
-                  </ol>
-                </section>
-              )}
-              {(response.analyzedTimeline?.length > 0) && (
-                <section>
-                  <h4>AI-Analyzed Timeline Highlights</h4>
-                  <div className="copilot-timeline-highlights">
-                    {response.analyzedTimeline.map((item, idx) => (
-                      <article className="copilot-claim" key={`tl-${idx}`}>
-                        <div className="copilot-workflow-head">
-                          <strong>{item.timestamp}</strong>
-                          <span className={`ai-sig-badge ai-sig-${item.significance.toLowerCase()}`}>{item.significance}</span>
-                        </div>
-                        <p><strong>{item.eventSummary}</strong> — {item.analysis}</p>
-                        <small>Evidence references: {item.evidenceRefs.join(', ')}</small>
-                      </article>
-                    ))}
+        {copilotConversation.map(({ id, question, response }) => {
+          const conclusions = response.objectiveConclusions || [];
+          const interpretations = response.interpretations || [];
+          const connections = response.connections || [];
+          const recommendations = response.recommendations || [];
+          const workflow = response.workflow || [];
+          const analyzedTimeline = response.analyzedTimeline || [];
+          const leads = response.investigativeLeads || [];
+          const gaps = response.gapsAndAnomalies || [];
+          const observed = response.observedEvidence || [];
+          const unsupported = response.unsupportedClaims || [];
+
+          const workSections = [
+            { id: 'analysis', label: 'Analysis', count: interpretations.length },
+            { id: 'connections', label: 'Connections', count: connections.length },
+            { id: 'nextSteps', label: 'Next Steps', count: recommendations.length },
+            { id: 'workflow', label: 'Workflow', count: workflow.length },
+            { id: 'timeline', label: 'Timeline', count: analyzedTimeline.length },
+            { id: 'leadsGaps', label: 'Leads & Gaps', count: leads.length + gaps.length },
+            { id: 'sources', label: 'Sources & Logs', count: observed.length },
+          ].filter((section) => section.count > 0);
+
+          const activeSection = odysseyWorkSection[id] || 'all';
+          const showSection = (sectionId) => activeSection === 'all' || activeSection === sectionId;
+
+          return (
+            <article className="copilot-chat-turn odyssey-chat-turn" key={id}>
+              <div className="copilot-user-message"><span>You</span><p>{question}</p></div>
+              <div className="copilot-assistant-message odyssey-assistant-message">
+                <div className="odyssey-response-card">
+                  <div className="copilot-result-heading">
+                    <div className="odyssey-speaker">
+                      <span className="odyssey-speaker-badge" aria-hidden="true">O</span>
+                      <div>
+                        <h3>Odyssey</h3>
+                        <small>Direct Forensic Response</small>
+                      </div>
+                    </div>
+                    <span>NEEDS CUSTODIAN VERIFICATION</span>
                   </div>
-                </section>
-              )}
-              <details className="copilot-observed-details">
-                <summary>Observed Evidence &amp; Logs ({response.observedEvidence.length})</summary>
-                {response.observedEvidence.map((fact) => (
-                  <article className="copilot-citation" key={fact.referenceId}>
-                    <strong>{fact.referenceId} · {fact.caseId} / {fact.filename} · SHA-256 {fact.sha256}</strong>
-                    <span>{fact.evidenceId} · {fact.module} · {fact.artifactType}: {fact.artifactReference}</span>
-                    <span>Observed value: {fact.value}</span>
-                    <small>Integrity: {fact.integrityStatus}; custody: {fact.custodyStatus}; human validation: {fact.validationStatus}</small>
-                  </article>
-                ))}
-              </details>
-              {response.unsupportedClaims.length > 0 && (
-                <details className="copilot-unsupported">
-                  <summary>Excluded unsupported claims ({response.unsupportedClaims.length})</summary>
-                  <ul>{response.unsupportedClaims.map((claim, index) => <li key={index}>{claim.text} — {claim.reason}</li>)}</ul>
-                </details>
-              )}
-              {response === copilotResponse && (
-                <div className="copilot-result-actions">
-                  <button type="button" className="button button-dark" onClick={saveCurrentCopilotFinding} disabled={copilotBusy}>Document &amp; Save as NEEDS REVIEW</button>
-                  <button type="button" className="button button-dark" onClick={() => onSwitchTab('verify')}>Open Verification Gate</button>
-                  <button
-                    type="button"
-                    className="button button-dark"
-                    onClick={() => {
-                      setTimelineViewMode('ai');
-                      navigateToWorkspace('timeline');
-                    }}
-                  >
-                    Open AI-Analyzed Timeline
-                  </button>
+
+                  {response.summary && (
+                    <p className="odyssey-summary-text">{response.summary}</p>
+                  )}
+
+                  {conclusions.length > 0 && (
+                    <div className="odyssey-key-conclusions">
+                      <h4>Key Conclusions</h4>
+                      <ul className="odyssey-key-list">
+                        {conclusions.map((claim, index) => (
+                          <li key={`conc-${index}`}>
+                            <p>{claim.text}</p>
+                            <div className="odyssey-ref-row">
+                              {claim.evidenceRefs.map((ref) => (
+                                <span className="odyssey-ref-chip" key={`conc-${index}-${ref}`}>{ref}</span>
+                              ))}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {(response.insufficientEvidence || unsupported.length > 0) && (
+                    <p className="copilot-insufficient"><strong>INSUFFICIENT EVIDENCE — NEEDS REVIEW</strong> Unsupported or uncited statements were automatically excluded from Odyssey&apos;s response.</p>
+                  )}
                 </div>
-              )}
-            </div>
-          </article>
-        ))}
-        {copilotBusy && <p className="copilot-thinking" role="status">Processing forensic analysis (extended timeout active for thorough review)…</p>}
+
+                {workSections.length > 0 && (
+                  <div className="odyssey-work-panel" aria-label="Odyssey supporting work">
+                    <div className="odyssey-work-header">
+                      <div>
+                        <span className="odyssey-work-eyebrow">SUPPORTING WORK &amp; BREAKDOWN</span>
+                        <p>Browse all sections or filter to a specific part of Odyssey&apos;s analysis.</p>
+                      </div>
+                    </div>
+
+                    <div className="odyssey-work-nav" role="tablist" aria-label="Filter Odyssey supporting work">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={activeSection === 'all'}
+                        className={`odyssey-work-tab ${activeSection === 'all' ? 'odyssey-work-tab-active' : ''}`}
+                        onClick={() => setOdysseyWorkSection((prev) => ({ ...prev, [id]: 'all' }))}
+                      >
+                        All Work ({workSections.reduce((sum, s) => sum + s.count, 0)})
+                      </button>
+                      {workSections.map((section) => (
+                        <button
+                          key={section.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={activeSection === section.id}
+                          className={`odyssey-work-tab ${activeSection === section.id ? 'odyssey-work-tab-active' : ''}`}
+                          onClick={() => setOdysseyWorkSection((prev) => ({ ...prev, [id]: section.id }))}
+                        >
+                          {section.label} ({section.count})
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="odyssey-work-sections">
+                      {showSection('analysis') && interpretations.length > 0 && (
+                        <section className="odyssey-work-block odyssey-work-analysis">
+                          <h4>Analytic Statements &amp; Interpretations <span>{interpretations.length}</span></h4>
+                          <div className="odyssey-work-list">
+                            {interpretations.map((claim, index) => (
+                              <article className="odyssey-work-item" key={`interp-${index}`}>
+                                <p>{claim.text}</p>
+                                <div className="odyssey-ref-row">
+                                  {claim.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`interp-${index}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
+                      {showSection('connections') && connections.length > 0 && (
+                        <section className="odyssey-work-block odyssey-work-connections">
+                          <h4>Cross-Artifact &amp; Log Connections <span>{connections.length}</span></h4>
+                          <div className="odyssey-work-list">
+                            {connections.map((claim, index) => (
+                              <article className="odyssey-work-item" key={`conn-${index}`}>
+                                <p>{claim.text}</p>
+                                <div className="odyssey-ref-row">
+                                  {claim.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`conn-${index}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
+                      {showSection('nextSteps') && recommendations.length > 0 && (
+                        <section className="odyssey-work-block odyssey-work-next">
+                          <h4>Viable Next Steps &amp; Recommendations <span>{recommendations.length}</span></h4>
+                          <div className="odyssey-work-list">
+                            {recommendations.map((claim, index) => (
+                              <article className="odyssey-work-item" key={`rec-${index}`}>
+                                <p>{claim.text}</p>
+                                <div className="odyssey-ref-row">
+                                  {claim.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`rec-${index}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
+                      {showSection('workflow') && workflow.length > 0 && (
+                        <section className="odyssey-work-block odyssey-work-workflow">
+                          <h4>Recommended Investigation Workflow <span>{workflow.length}</span></h4>
+                          <ol className="copilot-workflow-list">
+                            {workflow.map((step) => (
+                              <li className="copilot-workflow-step" key={`${step.step}-${step.title}`}>
+                                <div className="copilot-workflow-head">
+                                  <strong>Step {step.step}: {step.title}</strong>
+                                  <button
+                                    type="button"
+                                    className="copilot-module-jump"
+                                    onClick={() => jumpToWorkflowModule(step.module)}
+                                  >
+                                    {step.module} →
+                                  </button>
+                                </div>
+                                <p>{step.action}</p>
+                                <div className="odyssey-ref-row">
+                                  {step.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`wf-${step.step}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </li>
+                            ))}
+                          </ol>
+                        </section>
+                      )}
+
+                      {showSection('timeline') && analyzedTimeline.length > 0 && (
+                        <section className="odyssey-work-block odyssey-work-timeline">
+                          <h4>Odyssey Timeline Highlights <span>{analyzedTimeline.length}</span></h4>
+                          <div className="odyssey-work-list">
+                            {analyzedTimeline.map((item, idx) => (
+                              <article className="odyssey-work-item" key={`tl-${idx}`}>
+                                <div className="copilot-workflow-head">
+                                  <strong>{item.timestamp}</strong>
+                                  <span className={`ai-sig-badge ai-sig-${item.significance.toLowerCase()}`}>{item.significance}</span>
+                                </div>
+                                <p><strong>{item.eventSummary}</strong> — {item.analysis}</p>
+                                <div className="odyssey-ref-row">
+                                  {item.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`tl-${idx}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
+                      {showSection('leadsGaps') && (leads.length > 0 || gaps.length > 0) && (
+                        <section className="odyssey-work-block odyssey-work-leads">
+                          <h4>Investigative Leads, Gaps &amp; Limitations <span>{leads.length + gaps.length}</span></h4>
+                          <div className="odyssey-work-list">
+                            {leads.map((claim, index) => (
+                              <article className="odyssey-work-item" key={`lead-${index}`}>
+                                <span className="odyssey-item-tag">Lead</span>
+                                <p>{claim.text}</p>
+                                <div className="odyssey-ref-row">
+                                  {claim.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`lead-${index}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </article>
+                            ))}
+                            {gaps.map((claim, index) => (
+                              <article className="odyssey-work-item" key={`gap-${index}`}>
+                                <span className="odyssey-item-tag odyssey-item-tag-gap">Gap / Anomaly</span>
+                                <p>{claim.text}</p>
+                                <div className="odyssey-ref-row">
+                                  {claim.evidenceRefs.map((ref) => <span className="odyssey-ref-chip" key={`gap-${index}-${ref}`}>{ref}</span>)}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+
+                      {showSection('sources') && observed.length > 0 && (
+                        <details className="copilot-observed-details" open={activeSection === 'sources'}>
+                          <summary>Observed Evidence &amp; Logs ({observed.length})</summary>
+                          {observed.map((fact) => (
+                            <article className="copilot-citation" key={fact.referenceId}>
+                              <strong>{fact.referenceId} · {fact.caseId} / {fact.filename} · SHA-256 {fact.sha256}</strong>
+                              <span>{fact.evidenceId} · {fact.module} · {fact.artifactType}: {fact.artifactReference}</span>
+                              <span>Observed value: {fact.value}</span>
+                              <small>Integrity: {fact.integrityStatus}; custody: {fact.custodyStatus}; human validation: {fact.validationStatus}</small>
+                            </article>
+                          ))}
+                        </details>
+                      )}
+
+                      {unsupported.length > 0 && (
+                        <details className="copilot-unsupported">
+                          <summary>Excluded unsupported claims ({unsupported.length})</summary>
+                          <ul>{unsupported.map((claim, index) => <li key={index}>{claim.text} — {claim.reason}</li>)}</ul>
+                        </details>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {response === copilotResponse && (
+                  <div className="copilot-result-actions">
+                    <button type="button" className="button button-dark" onClick={saveCurrentCopilotFinding} disabled={copilotBusy}>Document &amp; Save as NEEDS REVIEW</button>
+                    <button type="button" className="button button-dark" onClick={() => onSwitchTab('verify')}>Open Verification Gate</button>
+                    <button
+                      type="button"
+                      className="button button-dark"
+                      onClick={() => {
+                        setTimelineViewMode('ai');
+                        navigateToWorkspace('timeline');
+                      }}
+                    >
+                      Open AI-Analyzed Timeline
+                    </button>
+                  </div>
+                )}
+              </div>
+            </article>
+          );
+        })}
+        {copilotBusy && <p className="copilot-thinking" role="status">Odyssey is analyzing verified evidence &amp; logs (extended timeout active)…</p>}
         {copilotError && <p className="copilot-error" role="alert">{copilotError}</p>}
       </div>
 
@@ -2185,9 +2348,9 @@ function App() {
       <form
         className="copilot-question-form copilot-chat-composer"
         onSubmit={askCopilot}
-        aria-label="Ask the AI Copilot"
+        aria-label="Ask Odyssey"
       >
-        <label htmlFor={isMini ? 'copilot-question' : 'copilot-workspace-question'}>Investigation question</label>
+        <label htmlFor={isMini ? 'copilot-question' : 'copilot-workspace-question'}>Ask Odyssey</label>
         <textarea
           ref={isMini ? copilotQuestionRef : undefined}
           id={isMini ? 'copilot-question' : 'copilot-workspace-question'}
@@ -2202,7 +2365,7 @@ function App() {
             }
           }}
           aria-describedby={isMini ? 'copilot-composer-help' : 'copilot-workspace-composer-help'}
-          placeholder="Ask for objective conclusions, cross-record connections, timeline audit, or an investigation workflow…"
+          placeholder="Ask Odyssey for objective conclusions, cross-record connections, timeline audit, or an investigation workflow…"
           required
         />
         <div className="copilot-composer-actions">
@@ -2215,7 +2378,7 @@ function App() {
                   ? 'Register the open local case for team access before sending.'
                   : !copilotConfigured
                     ? copilotAvailability
-                    : 'Only approved structured facts & logs are analyzed. Extended 5-minute timeout enabled.'}
+                    : 'Only approved structured facts & logs are analyzed by Odyssey. Extended 5-minute timeout enabled.'}
           </small>
           <button
             type="submit"
@@ -2543,6 +2706,22 @@ function App() {
           <span className="sidebar-case-indicator" />
           <span className="sidebar-case-copy"><small>ACTIVE CASE</small><strong>{caseId || 'No case selected'}</strong></span>
         </div>
+        <button
+          type="button"
+          className={`sidebar-creators-btn ${activeWorkspace === 'creators' ? 'sidebar-creators-btn-active' : ''}`}
+          aria-current={activeWorkspace === 'creators' ? 'page' : undefined}
+          title="Co-Creators — ClueBox Odyssey Toolkit"
+          onClick={() => navigateToWorkspace('creators')}
+        >
+          <span className="sidebar-creators-avatars" aria-hidden="true">
+            <span>C</span><span>J</span><span>B</span><span>M</span>
+          </span>
+          <span className="sidebar-creators-btn-copy">
+            <small>CO-CREATORS</small>
+            <strong>ClueBox Odyssey Team</strong>
+          </span>
+          <span className="sidebar-creators-btn-arrow" aria-hidden="true">›</span>
+        </button>
       </aside>
       <div className="command-main">
         <header className="topbar">
@@ -2821,7 +3000,7 @@ function App() {
           </article>
           <article className="summary-card summary-card-status">
             <span className="summary-card-icon"><Icon name="sparkles" size={18} /></span>
-            <div><span>Copilot service</span><strong>{copilotConfigured ? 'READY' : 'OFFLINE'}</strong><small>{copilotConfigured ? 'Secure provider available' : 'Provider setup required'}</small></div>
+            <div><span>Odyssey AI</span><strong>{copilotConfigured ? 'READY' : 'OFFLINE'}</strong><small>{copilotConfigured ? 'Secure provider available' : 'Provider setup required'}</small></div>
           </article>
         </section>}
 
@@ -2854,15 +3033,64 @@ function App() {
           </div>
         </section>}
 
+        {activeWorkspace === 'creators' && (
+          <section className="creators-workspace-section" aria-labelledby="creators-workspace-title">
+            <header className="creators-workspace-header">
+              <p className="eyebrow">CLUEBOX ODYSSEY TOOLKIT</p>
+              <h2 id="creators-workspace-title">Co-Creators</h2>
+              <p>We are all co-creators of the ClueBox Odyssey digital forensics toolkit.</p>
+            </header>
+            <div className="creators-grid" role="list" aria-label="ClueBox Odyssey co-creator profiles">
+              {[
+                {
+                  name: 'Carlos',
+                  initials: 'C',
+                  role: 'Co-Creator',
+                  bio: 'Ran backend and front end coding to create the website',
+                },
+                {
+                  name: 'Jeremiah',
+                  initials: 'J',
+                  role: 'Co-Creator',
+                  bio: 'Helped create the modules and put together an AI CoPilot with the help of Google Studio',
+                },
+                {
+                  name: 'Ben',
+                  initials: 'B',
+                  role: 'Co-Creator',
+                  bio: 'TBA',
+                },
+                {
+                  name: 'Melrose',
+                  initials: 'M',
+                  role: 'Co-Creator',
+                  bio: 'TBA',
+                },
+              ].map((creator) => (
+                <article className="creator-profile-card" role="listitem" key={creator.name}>
+                  <div className="creator-profile-top">
+                    <span className="creator-profile-avatar" aria-hidden="true">{creator.initials}</span>
+                    <div>
+                      <h3>{creator.name}</h3>
+                      <span className="creator-profile-role">{creator.role} · ClueBox Odyssey Toolkit</span>
+                    </div>
+                  </div>
+                  <p className="creator-profile-bio">{creator.bio}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
         {activeWorkspace === 'copilot' && (
           <section className="copilot-workspace-section" aria-labelledby="copilot-workspace-title">
             <header className="copilot-workspace-header">
               <div>
-                <p className="eyebrow">AI FORENSIC OBSERVATORY · {caseId || 'NO CASE OPEN'}</p>
-                <h2 id="copilot-workspace-title">AI Forensic Copilot Workspace</h2>
+                <p className="eyebrow">FORENSIC AI OBSERVATORY · {caseId || 'NO CASE OPEN'}</p>
+                <h2 id="copilot-workspace-title">Odyssey Workspace</h2>
                 <p>{copilotAvailability}</p>
               </div>
-              <div className="copilot-workspace-tabs" role="tablist" aria-label="AI Copilot workspace sections">
+              <div className="copilot-workspace-tabs" role="tablist" aria-label="Odyssey workspace sections">
                 <button
                   type="button"
                   role="tab"
@@ -2910,9 +3138,9 @@ function App() {
           >
             <header className="copilot-panel-header">
               <div className="copilot-panel-title">
-                <span className="copilot-panel-mark" aria-hidden="true">AI</span>
+                <span className="copilot-panel-mark" aria-hidden="true">O</span>
                 <div>
-                  <h2 id="copilot-title">AI Forensic Copilot</h2>
+                  <h2 id="copilot-title">Odyssey</h2>
                   <span>{caseId ? `Case ${caseId}` : 'No case selected'}</span>
                 </div>
                 <span className={`copilot-availability ${copilotConfigured ? 'copilot-available' : ''}`} role="status">{copilotConfigured ? 'Ready' : 'Offline'}</span>
@@ -2921,7 +3149,7 @@ function App() {
                 <button
                   type="button"
                   className="copilot-panel-control copilot-panel-control-text"
-                  title="Open full AI Copilot sidebar tab"
+                  title="Open full Odyssey sidebar tab"
                   onClick={() => {
                     navigateToWorkspace('copilot');
                     setCopilotPanelOpen(false);
@@ -2930,19 +3158,19 @@ function App() {
                 <button
                   type="button"
                   className="copilot-panel-control"
-                  aria-label={copilotPanelMinimized ? 'Restore AI Copilot chat' : 'Minimize AI Copilot chat'}
+                  aria-label={copilotPanelMinimized ? 'Restore Odyssey chat' : 'Minimize Odyssey chat'}
                   title={copilotPanelMinimized ? 'Restore chat' : 'Minimize chat'}
                   onClick={() => setCopilotPanelMinimized((minimized) => !minimized)}
                 >{copilotPanelMinimized ? '□' : '−'}</button>
                 <button
                   type="button"
                   className="copilot-panel-control"
-                  aria-label={copilotPanelExpanded ? 'Restore AI Copilot chat size' : 'Expand AI Copilot chat'}
+                  aria-label={copilotPanelExpanded ? 'Restore Odyssey chat size' : 'Expand Odyssey chat'}
                   aria-expanded={copilotPanelExpanded}
                   title={copilotPanelExpanded ? 'Restore chat size' : 'Expand chat'}
                   onClick={() => setCopilotPanelExpanded((expanded) => !expanded)}
                 >{copilotPanelExpanded ? '↙' : '↗'}</button>
-                <button type="button" className="copilot-panel-control" aria-label="Close AI Copilot chat" title="Close chat" onClick={closeCopilotPanel}>
+                <button type="button" className="copilot-panel-control" aria-label="Close Odyssey chat" title="Close chat" onClick={closeCopilotPanel}>
                   <Icon name="close" size={16} />
                 </button>
               </div>
@@ -2950,7 +3178,7 @@ function App() {
 
             {!copilotPanelMinimized && (
               <>
-                <nav className="copilot-minitab-nav" role="tablist" aria-label="Copilot minitab sections">
+                <nav className="copilot-minitab-nav" role="tablist" aria-label="Odyssey minitab sections">
                   <button
                     type="button"
                     role="tab"
@@ -3883,10 +4111,10 @@ function App() {
         ref={copilotLauncherRef}
         type="button"
         className="copilot-floating-launcher"
-        aria-label={copilotPanelOpen ? 'Close AI Copilot chat' : 'Open AI Copilot chat'}
+        aria-label={copilotPanelOpen ? 'Close Odyssey chat' : 'Open Odyssey chat'}
         aria-controls="copilot-chat-panel"
         aria-expanded={copilotPanelOpen}
-        title={copilotPanelOpen ? 'Close AI Forensic Copilot' : 'Open AI Forensic Copilot'}
+        title={copilotPanelOpen ? 'Close Odyssey' : 'Open Odyssey'}
         onClick={() => {
           if (copilotPanelOpen) closeCopilotPanel();
           else {

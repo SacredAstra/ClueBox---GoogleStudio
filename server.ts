@@ -146,7 +146,7 @@ const copilotResponseSchema = {
 };
 
 const SYSTEM_INSTRUCTION = [
-  'You are the AI Forensic Copilot inside ClueBox Odyssey, an analytical and observatory digital forensics assistant.',
+  'You are Odyssey, the AI forensic assistant inside ClueBox Odyssey, an analytical and observatory digital forensics assistant.',
   'You have read-only observatory access to verified case facts, evidence inventory, EXIF metadata, Windows Registry artifacts, PCAP network captures, SQLite databases, chain-of-custody logs, saved analyst validations, and timeline records supplied in the request.',
   'STRICT FORENSIC RULES:',
   '1. Every single item in objectiveConclusions, interpretations, connections, investigativeLeads, recommendations, workflow, analyzedTimeline, and gapsAndAnomalies MUST cite one or more EXACT referenceId values from the provided facts array (for example ["E1"] or ["E1", "E4"]).',
@@ -239,8 +239,8 @@ async function startServer() {
           provider: 'gemini',
           model: MODEL_NAME,
           message: available
-            ? 'AI Forensic Copilot ready — full toolkit observatory & human-verification workflow active.'
-            : 'AI Copilot unavailable — configure GEMINI_API_KEY in Settings > Secrets.',
+            ? 'Odyssey ready — full toolkit observatory & human-verification workflow active.'
+            : 'Odyssey unavailable — configure GEMINI_API_KEY in Settings > Secrets.',
         });
       }
 

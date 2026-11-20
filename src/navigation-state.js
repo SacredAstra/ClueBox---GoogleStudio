@@ -11,6 +11,7 @@ const VALID_WORKSPACES = new Set([
   'timeline',
   'reports',
   'copilot',
+  'creators',
 ]);
 
 const DEFAULT_STATE = {
